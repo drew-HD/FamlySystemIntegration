@@ -83,8 +83,8 @@ def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_n
     if len(match["childIds"]) == 1:
         lines.append(f"Child exists in Famly: {child_name or 'name not available'} (Famly Id: {match['childIds'][0]})")
     else:
-        lines.append("New child: will be created in Famly (no end date)")
-    lines.append("Who: " + ("Ad hoc only child" if plan["adHocOnly"] else "Standard child booking ad hoc"))
+        lines.append("Child doesn't exist in Famly, to be created")
+    lines.append("Ad hoc only child" if plan["adHocOnly"] else "Standard child booking ad hoc")
     for number, b in enumerate(plan["bookings"], 1):
         lines.append(f"{number}. {long_date(b['date'])} {b['session']} {_money(b['price'])}")
     total = f"Total {_money(plan['total'])}"

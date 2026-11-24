@@ -133,7 +133,7 @@ class GateTests(Case):
             "*[DRY RUN] Ad hoc approval: book 1 session*",
             "Deal: 1 · Site: Canada Water",
             "Child exists in Famly: Zed Quill (Famly Id: c1)",
-            "Who: Ad hoc only child",
+            "Ad hoc only child",
             "1. 28 Dec 2026 Morning £75.00",
             "Total £75.00 · Discount 5% (-£3.75) · To pay £71.25",
             "Steps: book_1_sessions",
@@ -143,12 +143,13 @@ class GateTests(Case):
     def test_message_wording_for_a_new_child_a_regular_child_and_the_other_sites(self):
         from actions.adhoc import messages
         new = plan(child=())
-        self.assertIn("New child: will be created in Famly (no end date)", messages.gate_text(new, "h" * 16, "dry"))
+        self.assertIn("Child doesn't exist in Famly, to be created", messages.gate_text(new, "h" * 16, "dry"))
         self.assertNotIn("Zed", messages.gate_text(new, "h" * 16, "dry", child_name="Zed Quill"))
         regular = dict(plan(), adHocOnly=False, site="HDWEST")
         text = messages.gate_text(regular, "h" * 16, "dry", child_name="Zed Quill")
         self.assertIn("Site: Westminster", text)
-        self.assertIn("Who: Standard child booking ad hoc", text)
+        self.assertIn("\nStandard child booking ad hoc\n", text)
+        self.assertNotIn("Who:", text)
         self.assertNotIn("Discount", text)                                   # no discount line when there is none
         self.assertEqual((messages.site_name("HDCITY"), messages.long_date("2026-12-05"), messages.percent("0.325"),
                           messages.percent("0.1"), messages.percent("0.025")), ("City", "05 Dec 2026", "32.5%", "10%", "2.5%"))
