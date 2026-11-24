@@ -228,8 +228,11 @@ def step_booking(w: Writer, site: str, child_id: str, out, today: date) -> None:
     preview = w.gql.execute(query_path=reads.CONFLICTS_QUERY, operation_name=reads.CONFLICTS_OP,
                             variables={"childId": child_id, "purchases": [purchase], "date": day.isoformat()})
     result = (((preview.get("data") or {}).get("finance") or {}).get("purchases") or {}).get("previewUpdate") or {}
-    blocked = {u.get("sessionId") for u in result.get("unbookableSessions") or []}
-    if result.get("newPurchaseConflictMessages") or session_id in blocked:
+    # The preview lists the submitted session itself as INPUT_PURCHASE ("this is yours") and the sessions it
+    # blocks as ANOTHER_INPUT_PURCHASE. Any OTHER kind on OUR session (already booked, closed, ...) is a conflict.
+    own_kinds = {u.get("conflictKind") for u in result.get("unbookableSessions") or []
+                 if u.get("sessionId") == session_id}
+    if result.get("newPurchaseConflictMessages") or own_kinds - {"INPUT_PURCHASE"}:
         raise WriteRefused("conflict_preview_not_clean")
     body = w.upsert(child_id, purchase)
     ids = purchase_ids(body)
