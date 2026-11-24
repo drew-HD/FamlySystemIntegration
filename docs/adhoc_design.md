@@ -66,3 +66,11 @@ From Drew's browser-network screenshots (kept in the gitignored `screenshots/` f
 - Confirm Famly really applies the 31 August default when the end date is removed (verify on a test child, read the summary back).
 - Which pricing group applies to a child; how `adhoc_discount` maps to `discountAmount`.
 - Whether the token works on the internal endpoints; the existing children with an end date from EYWorks (remove it or leave it?).
+
+## Probe results (2026-11-24)
+- Internal endpoints work with our token: `GetSessionsAndProducts` and the conflict preview (`adhoc-probe-read`, run live, read-only).
+- Ad hoc sessions are the plain Morning 75.00 / Afternoon 75.00 / Full Day 150.00; the "(F)/(FNA)/..." variants have no ad hoc price. Both pricing groups per site carry the same price. Booking one session on a date makes the child's other sessions that date unbookable (`ANOTHER_INPUT_PURCHASE`): one session per child per date.
+- Pricing groups: HDCW `eebac1d0-...` = under 3 (Drew); `d31d08ee-...` assumed over 3. HDCITY (`18b50271-...`, `78d46103-...`) and HDWEST (`3773609b-...`, `3be14e3c-...`) NOT mapped yet: a booking there is a hard stop.
+- Tags: `GET /api/v2/tags?institutionId=<site id>` lists a site's tags (`tagId`, `title`, `institutionId`, `deletedAt`); the tag title is "Ad Hoc Only". A child's summary `tags` shows what it carries.
+- The automatic end date is NOT visible through any API we read (REST summary `endDate` None, public `sitesRelation.lastDay` empty, internal `childrenList.endDate` None), even on a real child with no end date. Treat "no end date" as the correct ad hoc state; confirm in the Famly UI.
+- `adhoc-probe-write --confirm --step end-date|tag|booking` (test children only) is the write stage; see actions/adhoc_probe/writer.py.
