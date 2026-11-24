@@ -23,8 +23,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 from actions.onboard_audit import runner as audit
-from actions.onboard_dry_run import derive
+from actions.onboard_dry_run import derive, links
+from actions.onboard_dry_run.famly_reads import normalise_email
 from core import hubspot as hubspot_cfg
+from core.hubspot import HubSpotError
 
 PIPELINE = "ad hoc"
 MAX_SESSIONS = 10
@@ -37,6 +39,8 @@ SLOT_PROPERTIES = tuple(f"ad_hoc_session_{i}" for i in range(1, MAX_SESSIONS + 1
 ADHOC_PROPERTIES = DATE_PROPERTIES + SLOT_PROPERTIES + ("ad_hoc_end_date", "adhoc_discount")
 
 SEARCH_BATCH = 100
+# --contacts skips these (their sessions are in the past) unless include_past is set.
+PAST_STAGES = {"ad hoc completed", "closed lost"}
 
 
 def deal_properties() -> list[str]:
@@ -118,6 +122,38 @@ def enrolment_codes(child, site_id: str | None, dates: list[date]) -> list[str]:
     return codes
 
 
+def contact_email_codes(deal_contacts, child, index) -> list[str]:
+    """Do the deal's contacts' emails match a parent (Famly contact) on THIS child? Emails are held in
+    memory for the comparison only and never printed or stored; the result is codes."""
+    if not deal_contacts:
+        return ["deal_no_contacts"]
+    if not child.contacts:
+        return ["child_has_no_parents"]
+    with_email = 0
+    matched = 0
+    for contact in deal_contacts:
+        found = audit.find_contact(child, contact)[0] if (contact.emails or contact.email) else None
+        if contact.email or contact.emails:
+            with_email += 1
+        if found is not None:
+            matched += 1
+    if not with_email:
+        return ["deal_no_contact_email"]
+    if matched == 0:
+        return ["contact_email_not_on_child"]
+    return ["contact_email_on_child"] + (["some_contacts_not_on_child"] if matched < with_email else [])
+
+
+def email_candidates(deal_contacts, index) -> list[str]:
+    """Famly children (ids) that carry a parent whose email matches ANY deal contact's email."""
+    ids: set[str] = set()
+    for contact in deal_contacts or []:
+        emails = (set(contact.emails) | {normalise_email(contact.email)}) - {""}
+        for email in emails:
+            ids |= index.contact_children.get(email, set())
+    return sorted(ids)
+
+
 @dataclass
 class Row:
     deal_id: str
@@ -127,6 +163,7 @@ class Row:
     found_via: str = audit.NOT_FOUND
     sessions: int = 0
     codes: list[str] = field(default_factory=list)
+    candidates: list[str] = field(default_factory=list)     # child ids matched by parent email (ids only)
 
 
 def adhoc_deals(hubspot, stages: dict, stage_names: list[str] | None = None) -> list[dict]:
@@ -152,8 +189,14 @@ def deals_by_id(hubspot, deal_ids: list[str]) -> list[dict]:
 
 def run(hubspot, gql, rest, *, deal_ids: list[str] | None = None, stage_names: list[str] | None = None,
         site_ids: list[str] | None = None, today: date | None = None, children=None,
-        read_plans=None) -> tuple[dict, list[Row]]:
-    """The audit. `deal_ids` None = every Ad Hoc deal. `children` / `read_plans` are for tests."""
+        read_plans=None, contacts: bool = False, include_past: bool = False,
+        read_contacts=None) -> tuple[dict, list[Row]]:
+    """The audit. `deal_ids` None = every Ad Hoc deal. `children` / `read_plans` / `read_contacts` are
+    for tests.
+
+    `contacts` (--contacts): also compare each deal's contacts' emails with the parents on the Famly child
+    (GETs only; emails stay in memory). Unless `include_past`, Closed Lost and Ad Hoc Completed deals are
+    left out, as their sessions are in the past."""
     today = today or date.today()
     stages = hubspot.stage_names()
     if deal_ids is None:
@@ -166,6 +209,14 @@ def run(hubspot, gql, rest, *, deal_ids: list[str] | None = None, stage_names: l
             site_ids = urn_runner._all_institution_ids()
         children = audit.fetch_children(gql, site_ids)
     index = audit.Index(children)
+    if contacts and not include_past:
+        deals = [d for d in deals
+                 if derive.norm_stage(stages.get(str(d.get("dealstage")), ("", ""))[1]) not in PAST_STAGES]
+    if contacts and read_contacts is None:
+        labels = links.load_labels(hubspot)
+
+        def read_contacts(deal_id):  # noqa: E306
+            return links.deal_contacts(hubspot, labels, deal_id)
     if read_plans is None:
         from actions.read_child_plans import runner as plans_runner
 
@@ -192,15 +243,28 @@ def run(hubspot, gql, rest, *, deal_ids: list[str] | None = None, stage_names: l
         row.sessions = len(dates)
         row.codes += codes
 
+        deal_contacts = None
+        if contacts:
+            try:
+                deal_contacts = read_contacts(deal_id)
+            except HubSpotError:
+                row.codes.append("contacts_not_readable")
+
         row.found_via, child_ids = index.find(deal, deal_id)
         if not child_ids:
             recorded = str(deal.get("famly_childid") or "").strip()
             row.codes.append("famly_childid_not_in_famly" if recorded else audit.CHILD_MISSING)
+            if deal_contacts is not None:
+                row.candidates = email_candidates(deal_contacts, index)
+                row.codes.append({0: "email_no_match", 1: "email_matches_one_child"}.get(
+                    len(row.candidates), "email_matches_several_children"))
             continue
         if len(child_ids) > 1:
             row.codes.append(audit.CHILD_AMBIGUOUS)
             continue
         row.child_id = child_ids[0]
+        if deal_contacts is not None:
+            row.codes += contact_email_codes(deal_contacts, index.children[row.child_id], index)
         row.codes += enrolment_codes(index.children[row.child_id], site_id, dates)
         try:
             row.codes.append("child_has_plan" if read_plans(row.child_id) else "child_no_plan")
@@ -227,13 +291,14 @@ def summarise(rows: list[Row], hubspot, gql, rest) -> dict:
 
 
 def write_csv(path: str, rows: list[Row], only_codes=None) -> int:
-    """dealId, siteCode, stage, childId, found_via, sessions, codes. Ids, counts and codes only."""
+    """dealId, siteCode, stage, childId, found_via, sessions, codes, emailMatchChildIds. Ids, counts and codes only."""
     wanted = {c.strip() for c in only_codes or [] if c and c.strip()}
     rows = [r for r in rows if not wanted or wanted & set(r.codes)]
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["dealId", "siteCode", "stage", "childId", "found_via", "sessions", "codes"])
+        writer.writerow(["dealId", "siteCode", "stage", "childId", "found_via", "sessions", "codes",
+                         "emailMatchChildIds"])
         for r in rows:
             writer.writerow([r.deal_id, r.site_code or "", r.stage or "", r.child_id or "", r.found_via,
-                             r.sessions, ";".join(dict.fromkeys(r.codes))])
+                             r.sessions, ";".join(dict.fromkeys(r.codes)), ";".join(r.candidates)])
     return len(rows)

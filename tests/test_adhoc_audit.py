@@ -109,8 +109,56 @@ class RunTests(unittest.TestCase):
             path = str(Path(tmp) / "a.csv")
             runner.write_csv(path, rows)
             header = next(csv.reader(open(path, encoding="utf-8")))
-        self.assertEqual(header, ["dealId", "siteCode", "stage", "childId", "found_via", "sessions", "codes"])
+        self.assertEqual(header[:7], ["dealId", "siteCode", "stage", "childId", "found_via", "sessions", "codes"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeContact:
+    def __init__(self, email="", emails=()):
+        self.email, self.emails = email, set(emails)
+
+
+class ContactEmailTests(unittest.TestCase):
+    def kid(self, *emails, cid="c1"):
+        from actions.onboard_audit.runner import FamlyContact
+        return FamlyChild(id=cid, relations=[(SITE, "2025-01-01", "")],
+                          contacts=[FamlyContact(email=e) for e in emails])
+
+    def audit(self, contacts, children, deals=None):
+        deals = deals or [deal(id="1", famly_childid="c1")]
+        return runner.run(FakeHubSpot(deals), None, None, today=TODAY, children=children,
+                          read_plans=lambda c: [], contacts=True, read_contacts=lambda d: contacts)
+
+    def test_match_mismatch_and_gaps(self):
+        c = {"c1": self.kid("mum@x.org")}
+        for contacts, expect in [
+            ([FakeContact("Mum@X.org")], "contact_email_on_child"),
+            ([FakeContact("other@x.org")], "contact_email_not_on_child"),
+            ([FakeContact("")], "deal_no_contact_email"),
+            ([], "deal_no_contacts"),
+        ]:
+            _s, rows = self.audit(contacts, c)
+            self.assertIn(expect, rows[0].codes, expect)
+        _s, rows = self.audit([FakeContact("a@x.org", ["mum@x.org"])], c)       # additional address
+        self.assertIn("contact_email_on_child", rows[0].codes)
+
+    def test_missing_child_is_found_by_parent_email(self):
+        kids = {"c1": self.kid("mum@x.org"), "c2": self.kid("dad@x.org", "mum@x.org", cid="c2")}
+        _s, rows = self.audit([FakeContact("mum@x.org")], kids, deals=[deal(id="2")])
+        self.assertIn("email_matches_several_children", rows[0].codes)
+        self.assertEqual(rows[0].candidates, ["c1", "c2"])
+        _s, rows = self.audit([FakeContact("who@x.org")], kids, deals=[deal(id="2")])
+        self.assertIn("email_no_match", rows[0].codes)
+
+    def test_closed_and_completed_are_skipped(self):
+        class HS(FakeHubSpot):
+            def stage_names(self):
+                return {"s1": ("Ad Hoc", "Approved"), "s9": ("Ad Hoc", "Ad Hoc Completed"),
+                        "s8": ("Ad Hoc", "Closed Lost")}
+        deals = [deal(id="1"), deal(id="2", dealstage="s9"), deal(id="3", dealstage="s8")]
+        s, rows = runner.run(HS(deals), None, None, today=TODAY, children={}, read_plans=lambda c: [],
+                             contacts=True, read_contacts=lambda d: [])
+        self.assertEqual([r.deal_id for r in rows], ["1"])
