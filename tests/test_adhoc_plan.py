@@ -157,14 +157,29 @@ class PricingAndHoldTests(Case):
         self.assertEqual(clean["details"], {})
 
     def test_a_conflict_names_the_dates_and_kinds(self):
+        # booked: Morning on 28 Dec, Full Day on 29 Dec
         preview = {"newPurchaseConflictMessages": [{"date": "2026-12-28", "conflictKind": "ALREADY_BOOKED"}],
-                   "unbookableSessions": [{"sessionId": "s-Morning", "conflictKind": "ANOTHER_INPUT_PURCHASE", "date": "2026-12-29"},
-                                          {"sessionId": "s-Other", "conflictKind": "ANOTHER_INPUT_PURCHASE", "date": "2026-12-30"},
-                                          {"sessionId": "s-Morning", "conflictKind": "INPUT_PURCHASE", "date": "2026-12-28"}]}
+                   "unbookableSessions": [{"sessionId": "s-Morning", "conflictKind": "INPUT_PURCHASE", "date": "2026-12-28"},
+                                          {"sessionId": "s-Full Day", "conflictKind": "ALREADY_BOOKED", "date": "2026-12-29"}]}
         plan = self.plan([kid()], preview=preview)
         self.assertEqual(plan["details"]["conflict_preview_not_clean"],
-                         [{"date": "2026-12-28", "kind": "ALREADY_BOOKED"},
-                          {"date": "2026-12-29", "kind": "ANOTHER_INPUT_PURCHASE"}])   # not the other session, not the input one
+                         [{"date": "2026-12-28", "kind": "ALREADY_BOOKED"}, {"date": "2026-12-29", "kind": "ALREADY_BOOKED"}])
+
+    def test_sessions_blocked_by_our_own_booking_on_other_days_are_not_conflicts(self):
+        # Famly lists, on each booked date, the OTHER sessions that booking blocks. Morning is booked on 28 Dec, so on
+        # 29 Dec (a Full Day date) the blocked Morning entry must NOT count: only (session, date) pairs we book do.
+        preview = {"newPurchaseConflictMessages": [],
+                   "unbookableSessions": [{"sessionId": "s-Full Day", "conflictKind": "INPUT_PURCHASE", "date": "2026-12-29"},
+                                          {"sessionId": "s-Morning", "conflictKind": "ANOTHER_INPUT_PURCHASE", "date": "2026-12-29"},
+                                          {"sessionId": "s-Full Day", "conflictKind": "ANOTHER_INPUT_PURCHASE", "date": "2026-12-28"},
+                                          {"sessionId": "s-Morning", "conflictKind": "INPUT_PURCHASE", "date": "2026-12-28"}]}
+        plan = self.plan([kid()], preview=preview)
+        self.assertEqual((plan["holds"], plan["details"]), ([], {}))
+
+    def test_a_session_booked_twice_on_a_date_is_still_a_conflict(self):
+        preview = {"unbookableSessions": [{"sessionId": "s-Morning", "conflictKind": "ANOTHER_INPUT_PURCHASE",
+                                           "date": "2026-12-28"}]}                 # Morning IS booked on 28 Dec
+        self.assertIn("conflict_preview_not_clean", self.plan([kid()], preview=preview)["holds"])
 
     def test_money_and_booking_holds(self):
         for bad in ("abc", "10", "1.5", "-0.1"):
