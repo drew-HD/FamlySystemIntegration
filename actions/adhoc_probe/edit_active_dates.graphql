@@ -1,0 +1,28 @@
+# THE END-DATE WRITE (INTERNAL API), test children only. Reconstructed from the web app's
+# EditChildActiveDates request (screenshots 2026-11-24). Sending childActiveDates WITHOUT endInfo
+# removes the end date; the probe never sends endInfo.
+mutation EditChildActiveDates($childId: ChildId!, $childActiveDates: ChildActiveDatesInput!, $isParent: Boolean!) {
+  attendance {
+    childActiveDates {
+      updateChildActiveDates(childId: $childId, childActiveDates: $childActiveDates) {
+        ...ChildActiveDates
+      }
+    }
+  }
+}
+
+fragment ChildActiveDates on ChildActiveDatesType {
+  startDate
+  endInfo { ...ChildActiveDatesEndInfo }
+}
+
+fragment ChildActiveDatesEndInfo on ChildActiveDatesEndInfoType {
+  endDate
+  additionalInfo @skip(if: $isParent)
+  reasonForLeaving @skip(if: $isParent) { ...ReasonForLeaving }
+}
+
+fragment ReasonForLeaving on ReasonForLeaving {
+  id
+  name
+}

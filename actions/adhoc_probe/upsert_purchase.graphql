@@ -1,0 +1,18 @@
+# THE BOOKING WRITE (INTERNAL API), test children only. Reconstructed from the web app's UpsertPurchase
+# request (screenshots 2026-11-24). Only the fields the probe needs are selected, so a field that
+# does not exist fails validation BEFORE anything runs.
+mutation UpsertPurchase($purchases: [PurchaseInput!]!) {
+  finance {
+    purchases {
+      update(purchases: $purchases) {
+        id
+        sessionBookings {
+          sessionPurchaseId
+          purchaseDate
+          bookedPrice
+          pricingGroupId
+        }
+      }
+    }
+  }
+}

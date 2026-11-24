@@ -1,0 +1,9 @@
+# THE UNDO (INTERNAL API). Only ever sent with purchase ids created by THIS run of the probe, on a
+# verified test child. Reconstructed from the web app's DeletePurchase request (screenshot 2026-11-24).
+mutation DeletePurchase($purchaseIds: [PurchaseId!]!) {
+  finance {
+    purchases {
+      delete(purchaseIds: $purchaseIds)
+    }
+  }
+}
