@@ -12,13 +12,14 @@ from actions.adhoc import approval, cli_enqueue, store, worker
 from integrations import slack
 
 
-def plan(holds=(), flags=("stage_not_approved",), stage="Approved", child=("c1",), candidates=None, total="75.00"):
+def plan(holds=(), flags=("stage_not_approved",), stage="Approved", child=("c1",), candidates=None, total="75.00",
+         discount=("0", "0.00")):
     match = {"via": "urn", "childIds": list(child)}
     if candidates is not None:
         match["candidateIds"] = list(candidates)
     return {"dealId": "1", "stage": stage, "site": "HDCW", "holds": list(holds), "flags": list(flags), "match": match,
-            "adHocOnly": True, "total": total, "discountAmount": "0.00", "discountFraction": "0",
-            "totalAfterDiscount": total, "steps": ["book_1_sessions"],
+            "adHocOnly": True, "total": total, "discountAmount": discount[1], "discountFraction": discount[0],
+            "totalAfterDiscount": f"{float(total) - float(discount[1]):.2f}", "steps": ["book_1_sessions"],
             "bookings": [{"date": "2026-12-28", "session": "Morning", "price": "75.00", "ageBand": "under3",
                           "pricingGroup": "g"}]}
 
@@ -123,15 +124,35 @@ class GateTests(Case):
         self.assertEqual((store.status_counts(), self.notifier.sent), ({store.QUEUED: 1}, []))
 
     def test_a_clean_plan_posts_the_approval_and_waits(self):
-        _r, job = self.run_job(plan())
+        _r, job = self.run_job(plan(discount=("0.05", "3.75")))
         self.assertEqual((job.status, job.question, job.holds), (store.AWAITING_APPROVAL, "plan", []))
         sent = self.notifier.sent
         self.assertEqual([m["kind"] for m in sent], ["gate"])
-        self.assertIn("[DRY RUN]", sent[0]["text"])
-        self.assertIn("£75.00", sent[0]["text"])
         self.assertTrue(job.approval_nonce and job.approval_ref)
-        for secret in ("Zed", "Quill"):
-            self.assertNotIn(secret, sent[0]["text"])
+        self.assertEqual(sent[0]["text"].split("\n"), [
+            "*[DRY RUN] Ad hoc approval: book 1 session*",
+            "Deal: 1 · Site: Canada Water",
+            "Child exists in Famly: Zed Quill (Famly Id: c1)",
+            "Ad hoc only child",
+            "1. 28 Dec 2026 Morning £75.00",
+            "Total £75.00 · Discount 5% (-£3.75) · To pay £71.25",
+            "Steps: book_1_sessions",
+            f"Plan: `{job.plan_hash}`"])
+        self.assertNotIn("Zed", repr(store.get(job.id)) + str(store.get(job.id).plan))   # the name is never stored
+
+    def test_message_wording_for_a_new_child_a_regular_child_and_the_other_sites(self):
+        from actions.adhoc import messages
+        new = plan(child=())
+        self.assertIn("Child doesn't exist in Famly, to be created", messages.gate_text(new, "h" * 16, "dry"))
+        self.assertNotIn("Zed", messages.gate_text(new, "h" * 16, "dry", child_name="Zed Quill"))
+        regular = dict(plan(), adHocOnly=False, site="HDWEST")
+        text = messages.gate_text(regular, "h" * 16, "dry", child_name="Zed Quill")
+        self.assertIn("Site: Westminster", text)
+        self.assertIn("\nStandard child booking ad hoc\n", text)
+        self.assertNotIn("Who:", text)
+        self.assertNotIn("Discount", text)                                   # no discount line when there is none
+        self.assertEqual((messages.site_name("HDCITY"), messages.long_date("2026-12-05"), messages.percent("0.325"),
+                          messages.percent("0.1"), messages.percent("0.025")), ("City", "05 Dec 2026", "32.5%", "10%", "2.5%"))
 
     def test_holds_are_a_plain_notice_with_retry_and_a_webhook_job_must_be_approved(self):
         _r, job = self.run_job(plan(holds=["discount_invalid", "session_date_past"], child=()))
