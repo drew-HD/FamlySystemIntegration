@@ -164,6 +164,17 @@ class GateTests(Case):
         _r, job = self.run_job(plan(stage="Invoice Paid"), deal="3", source="cli")
         self.assertEqual((job.status, job.flags), (store.AWAITING_APPROVAL, ["stage_not_approved"]))
 
+    def test_the_hold_notice_lists_the_dates_and_what_kind_of_conflict(self):
+        held = dict(plan(holds=["session_date_past", "conflict_preview_not_clean"], child=()),
+                    details={"session_date_past": ["2026-11-02", "2026-11-09"],
+                             "conflict_preview_not_clean": [{"date": "2026-12-28", "kind": "ALREADY_BOOKED"},
+                                                            {"date": "2026-12-29", "kind": "ANOTHER_INPUT_PURCHASE"}]})
+        self.run_job(held)
+        text = self.notifier.sent[-1]["text"]
+        self.assertIn("A booked date is in the past (02 Nov 2026, 09 Nov 2026).", text)
+        self.assertIn("Famly reports a booking conflict for these dates: 28 Dec 2026 (already booked); "
+                      "29 Dec 2026 (another session on this booking is on the same day).", text)
+
     def test_unreadable_deals_and_worker_errors_are_codes_never_messages(self):
         _r, job = self.run_job({"error": "deal_not_found"})
         self.assertEqual((job.status, job.last_error_code), (store.FAILED, "deal_not_found"))

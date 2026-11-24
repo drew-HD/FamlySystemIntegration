@@ -103,6 +103,36 @@ def deal_sessions(deal: dict) -> list[tuple[date, str]]:
     return sorted(set(out))
 
 
+def date_details(deal: dict, today: date) -> dict[str, list[str]]:
+    """Which dates each session-data hold is about, as ISO dates (no names, no personal data)."""
+    seen, dups, past, weekend = set(), set(), set(), set()
+    for prop in adhoc.DATE_PROPERTIES:
+        day = adhoc.parse_date(deal.get(prop))
+        if day is None:
+            continue
+        if day in seen:
+            dups.add(day)
+        seen.add(day)
+        if day < today:
+            past.add(day)
+        if day.weekday() >= 5:
+            weekend.add(day)
+    return {code: sorted(d.isoformat() for d in days)
+            for code, days in (("session_date_duplicate", dups), ("session_date_past", past),
+                               ("session_date_weekend", weekend)) if days}
+
+
+def conflict_details(result: dict, session_ids: set) -> list[dict]:
+    """The conflicts Famly's preview reports for OUR sessions: [{"date", "kind"}], by date. Famly marks the
+    session being booked INPUT_PURCHASE (not a conflict); any other kind on it, or any message, is one."""
+    found = [{"date": str(m.get("date") or "")[:10], "kind": str(m.get("conflictKind") or "conflict")}
+             for m in result.get("newPurchaseConflictMessages") or []]
+    found += [{"date": str(u.get("date") or "")[:10], "kind": str(u.get("conflictKind") or "conflict")}
+              for u in result.get("unbookableSessions") or []
+              if u.get("sessionId") in session_ids and u.get("conflictKind") not in OWN_OK_KINDS]
+    return sorted(found, key=lambda c: (c["date"], c["kind"]))
+
+
 def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today: date,
                confirmed_child_id: str | None = None, force_new: bool = False) -> dict:
     deal_id = str(deal["id"])
@@ -123,6 +153,8 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     # sessions have happened), but the pipeline must never book a session in the past.
     codes, _dates = adhoc.session_codes(deal, None, today)
     holds += [c for c in codes if c not in UNUSED_CODES]
+    details = date_details(deal, today)
+    plan["details"] = {code: days for code, days in details.items() if code in holds}
     sessions = deal_sessions(deal)
     # adhoc_discount is stored as a FRACTION of the ad hoc total (0.05 = 5%, 0.325 = 32.5%; checked against the
     # live deals). Famly's discountAmount is a FLAT amount, so it is computed below from the sessions total.
@@ -206,6 +238,7 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
                        if u.get("sessionId") in set(session_ids)}
                 if result.get("newPurchaseConflictMessages") or own - OWN_OK_KINDS:
                     holds.append("conflict_preview_not_clean")
+                    plan["details"]["conflict_preview_not_clean"] = conflict_details(result, set(session_ids))
             else:
                 flags.append("conflicts_not_checked_new_child")
         except writer.WriteRefused as exc:

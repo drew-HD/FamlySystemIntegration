@@ -147,6 +147,25 @@ class PricingAndHoldTests(Case):
                                           preview=lambda c, p, d: {}, price_child_for_site=lambda s: "t"), TODAY)
             self.assertIn("session_date_past", plan["holds"], stage)
 
+    def test_holds_say_which_dates_they_are_about(self):
+        plan = self.plan([kid()], ad_hoc_date_1="2026-11-02", ad_hoc_date_2="2026-12-05", ad_hoc_session_2="Morning",
+                         ad_hoc_date_3="2026-12-05", ad_hoc_session_3="Morning")
+        self.assertEqual(plan["details"], {"session_date_past": ["2026-11-02"],
+                                           "session_date_duplicate": ["2026-12-05"],
+                                           "session_date_weekend": ["2026-12-05"]})
+        clean = self.plan([kid()])
+        self.assertEqual(clean["details"], {})
+
+    def test_a_conflict_names_the_dates_and_kinds(self):
+        preview = {"newPurchaseConflictMessages": [{"date": "2026-12-28", "conflictKind": "ALREADY_BOOKED"}],
+                   "unbookableSessions": [{"sessionId": "s-Morning", "conflictKind": "ANOTHER_INPUT_PURCHASE", "date": "2026-12-29"},
+                                          {"sessionId": "s-Other", "conflictKind": "ANOTHER_INPUT_PURCHASE", "date": "2026-12-30"},
+                                          {"sessionId": "s-Morning", "conflictKind": "INPUT_PURCHASE", "date": "2026-12-28"}]}
+        plan = self.plan([kid()], preview=preview)
+        self.assertEqual(plan["details"]["conflict_preview_not_clean"],
+                         [{"date": "2026-12-28", "kind": "ALREADY_BOOKED"},
+                          {"date": "2026-12-29", "kind": "ANOTHER_INPUT_PURCHASE"}])   # not the other session, not the input one
+
     def test_money_and_booking_holds(self):
         for bad in ("abc", "10", "1.5", "-0.1"):
             self.assertIn("discount_invalid", self.plan([kid()], adhoc_discount=bad)["holds"], bad)

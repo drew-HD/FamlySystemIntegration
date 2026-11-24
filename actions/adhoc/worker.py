@@ -178,7 +178,7 @@ def _hold(job, deps, codes, run_mode, plan=None, flags=None, digest=None) -> Non
     nonce = _nonce()
     store.set_status(job.id, store.HELD, holds=list(codes), flags=flags or [], approval_nonce=nonce,
                      last_error_code=codes[0] if codes else None)
-    ref = deps.notifier.hold(messages.hold_text(job.deal_id, codes, run_mode), job.id, nonce)
+    ref = deps.notifier.hold(messages.hold_text(job.deal_id, codes, run_mode, (plan or {}).get("details")), job.id, nonce)
     if ref:
         store.update(job.id, approval_ref=ref)
 
