@@ -24,6 +24,9 @@ from actions.onboard import cli_phone_audit as onboard_phone_audit
 from actions.onboard import cli_status as onboard_status
 from actions.onboard import cli_worker as onboard_worker
 from actions.adhoc_audit import cli as adhoc_audit
+from actions.adhoc import cli_enqueue as adhoc_enqueue
+from actions.adhoc import cli_status as adhoc_status
+from actions.adhoc import cli_worker as adhoc_worker
 from actions.adhoc_probe import cli as adhoc_probe
 from actions.adhoc_plan import cli as adhoc_dry_run
 from actions.adhoc_probe import cli_write as adhoc_probe_write
@@ -85,6 +88,9 @@ ACTIONS = [
     onboard_audit,
     adhoc_audit,
     adhoc_probe,
+    adhoc_enqueue,
+    adhoc_worker,
+    adhoc_status,
     adhoc_dry_run,
     adhoc_probe_write,
     testchild_seed,
