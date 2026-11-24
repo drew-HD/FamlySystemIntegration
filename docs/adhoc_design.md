@@ -99,3 +99,10 @@ From Drew's browser-network screenshots (kept in the gitignored `screenshots/` f
 
 ## Ended enrolments are NOT a hold (Drew, 2026-11-24)
 Famly accepts a booking after an enrolment has ended (proved on a test child), so the session is simply added, for plan and no-plan children alike; the end date is not moved. A session BEFORE the enrolment starts is untested and stays a hold (`child_starts_after_first_session`). Names may be printed to the terminal (never logged).
+
+## Worker, step 1 (built, fakes only): store + worker loop, dry mode
+- `actions/adhoc/`: its own jobs table (`var/adhoc_jobs.sqlite3`, `ADHOC_STORE_PATH`), same conventions as onboarding (one active job per deal by a unique partial index, atomic claim, in-flight `writing` jobs become `needs_review` and are never replayed). One child can have many deals, each its own job.
+- `ADHOC_MODE` off | dry | live (default off). `dry` plans each deal READ-ONLY (the planner in `actions/adhoc_plan`, wired by `adhoc_plan/readers.py`) and records plan, holds and flags: `dry_done` or `held`. `live` is refused until the write step exists.
+- A webhook job must be an Approved deal in the Ad Hoc pipeline, else `held` `stage_not_eligible`. A CLI job may be any stage (the plan shows the flag `stage_not_approved`).
+- Commands: `adhoc-enqueue --deal-id ID`, `adhoc-worker [--once]`, `adhoc-status [--deal-id ID]`.
+- Order of the remaining steps: 2 Slack gate (plan approval + the child-match question with child name and deal id), 3 writes behind `live`, 4 the intake webhook last.
