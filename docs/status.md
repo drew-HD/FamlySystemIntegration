@@ -12,6 +12,8 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 - Prod .env (2026-11-18): COMMIT_ENABLED true, allow-list `*`, QUEUE_MODE auto, ONBOARD_MODE live, BILL_PAYER on, LEGACY_WRITE off. Queue 303 done, 0 held.
 - `onboard-audit --preview-estimate` (live 2026-11-18): fees vs Famly's previewed estimate of the active plan (only PUT, preview-only, `actions/plan_estimate`); cron stays GET-only. Plan dates compare the span of all plans (funding/advanced fees split plans): plan_from_differs / plan_to_differs / plan_gap_between_plans.
 
+- Ad hoc (branch `adhoc-design`, fakes only, NOT run live): `adhoc-audit` (read-only audit of the HubSpot Ad Hoc pipeline) and `create-test-children --confirm` (one AATest test child per site). Design and open questions: docs/adhoc_design.md.
+
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
 - QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_ALLOWED_INSTITUTIONS.
