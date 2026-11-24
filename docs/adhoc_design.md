@@ -113,3 +113,6 @@ Famly accepts a booking after an enrolment has ended (proved on a test child), s
 - Holds -> a plain-English "not done, a person needs to check" notice with a Retry button (a fresh job, same enqueue rules).
 - A lone `parent_email_matches_a_different_child` with exactly one candidate -> the CHILD-MATCH question with the Famly child's name and the deal id (the one message that carries a name; the name comes from memory at post time and is never stored). "That's the child" re-plans with that child confirmed; "Create a new child" re-plans as a new child; Reject holds the job. A deal's own URN / recorded id / reference match is never overridden by this answer.
 - Every click is an atomic state change with a per-request nonce and a plan-hash prefix, so a double click or an old message does nothing. If Slack refuses a post the job is held `slack_post_failed` rather than left waiting.
+
+## Hold notices name the dates (Drew, 2026-11-24)
+A hold now says WHICH dates it is about: past, weekend and duplicate dates, and for a Famly booking conflict each conflicting date with its kind (e.g. `ALREADY_BOOKED`, or "another session on this booking is on the same day"). The plan carries `details` (ISO dates and conflict kinds only; no names) and the hold notice prints them as `28 Dec 2026`.

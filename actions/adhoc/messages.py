@@ -112,9 +112,31 @@ def match_text(plan: dict, famly_name: str, child_id: str, mode: str) -> str:
         "different child press *Create a new child*."])
 
 
-def hold_text(deal_id: str, codes, mode: str) -> str:
+CONFLICT_WORDS = {
+    "ANOTHER_INPUT_PURCHASE": "another session on this booking is on the same day",
+    "INPUT_PURCHASE": "this booking",
+}
+
+
+def _conflict_word(kind: str) -> str:
+    return CONFLICT_WORDS.get(kind, kind.lower().replace("_", " "))
+
+
+def _detail(code: str, details) -> str:
+    """The dates a hold is about: ' (28 Dec 2026, 04 Jan 2027)'. A conflict also says what kind, per date:
+    ': 28 Dec 2026 (another session on this booking is on the same day)'."""
+    items = (details or {}).get(code) or []
+    if not items:
+        return ""
+    if code == "conflict_preview_not_clean":
+        return ": " + "; ".join(f"{long_date(c['date']) if c.get('date') else 'a date'} ({_conflict_word(c['kind'])})"
+                                for c in items)
+    return f" ({', '.join(long_date(d) for d in items)})"
+
+
+def hold_text(deal_id: str, codes, mode: str, details=None) -> str:
     dry = DRY if mode == "dry" else ""
-    sentences = [SENTENCES.get(c, f"({c})") for c in codes]
+    sentences = [SENTENCES.get(c, f"({c})").rstrip(".") + _detail(c, details) + "." for c in codes]
     return "\n".join([f"*{dry}Ad hoc: not done, a person needs to check*", f"Deal: {deal_link(deal_id)}",
                       *[f"• {t}" for t in sentences],
                       "Fix it in HubSpot or Famly, then press Retry.", f"Codes: {', '.join(codes)}"])
