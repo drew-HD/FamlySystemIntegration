@@ -74,3 +74,11 @@ From Drew's browser-network screenshots (kept in the gitignored `screenshots/` f
 - Tags: `GET /api/v2/tags?institutionId=<site id>` lists a site's tags (`tagId`, `title`, `institutionId`, `deletedAt`); the tag title is "Ad Hoc Only". A child's summary `tags` shows what it carries.
 - The automatic end date is NOT visible through any API we read (REST summary `endDate` None, public `sitesRelation.lastDay` empty, internal `childrenList.endDate` None), even on a real child with no end date. Treat "no end date" as the correct ad hoc state; confirm in the Famly UI.
 - `adhoc-probe-write --confirm --step end-date|tag|booking` (test children only) is the write stage; see actions/adhoc_probe/writer.py.
+
+## Pipeline rules (Drew, 2026-11-24)
+- A new HubSpot deal is created for EVERY ad hoc request, so one child can have several ad hoc deals. Match the child by URN, then parent email, then child name (accepted only if name/date of birth do not contradict the deal; a parent email that matches only a differently named child is a HOLD).
+- No plan in Famly + ad hoc request = "ad hoc only": tag, end date removed. A child WITH a plan is a regular child: no tag, no end-date change.
+- Go stage is **Approved**. A HubSpot workflow will POST the deal id to the intake webhook when an ad hoc deal reaches Approved.
+- First live version is a DRY RUN on a couple of deals before any write (`adhoc-dry-run`, read-only, built; see actions/adhoc_plan).
+- Sessions after the end of the child's Famly enrolment (all 8 such live deals): removing the end date fixes the no-plan children; children WITH a plan and an enrolment that has ended need a decision.
+- `adhoc_discount` is a HOLD (`discount_unconfirmed`) until we know whether it is an amount or a percent, and per session or per deal.
