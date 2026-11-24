@@ -40,12 +40,15 @@ STEPS = ("end-date", "tag", "booking")
 SESSION_TITLE = "Morning"            # the plain ad hoc session; the "(F) ..." variants carry no ad hoc price
 BOOKING_DAY = "MONDAY"
 
-# Pricing group per site and age band (Drew, 2026-11-24: eebac1d0-... is under 3). Prices are the same in
-# both groups today. HDCW over-3 is the site's OTHER group (inferred, to be confirmed). HDCITY and HDWEST
-# are not mapped yet, so a booking there is a hard stop.
+# Pricing group per site and age band, from Drew (2026-11-24). Prices are the same in both groups today.
+# HDCW: eebac1d0 is under 3 (stated); d31d08ee is the site's other group (taken as over 3).
 PRICING_GROUPS = {
     "HDCW": {"under3": "eebac1d0-8fb1-4c1c-a854-28ab4ed6873b",
              "over3": "d31d08ee-d4e1-468c-ada3-44ff7ae67ad8"},
+    "HDCITY": {"under3": "18b50271-fe44-45a5-acb6-370795e2edf5",
+               "over3": "78d46103-bf26-44d0-9959-9ca813ea4139"},
+    "HDWEST": {"under3": "3be14e3c-7401-4394-b1f7-468b96eac0ec",
+               "over3": "3773609b-ff7f-46ac-a147-53954aeb4268"},
 }
 
 
@@ -228,8 +231,11 @@ def step_booking(w: Writer, site: str, child_id: str, out, today: date) -> None:
     preview = w.gql.execute(query_path=reads.CONFLICTS_QUERY, operation_name=reads.CONFLICTS_OP,
                             variables={"childId": child_id, "purchases": [purchase], "date": day.isoformat()})
     result = (((preview.get("data") or {}).get("finance") or {}).get("purchases") or {}).get("previewUpdate") or {}
-    blocked = {u.get("sessionId") for u in result.get("unbookableSessions") or []}
-    if result.get("newPurchaseConflictMessages") or session_id in blocked:
+    # The preview lists the submitted session itself as INPUT_PURCHASE ("this is yours") and the sessions it
+    # blocks as ANOTHER_INPUT_PURCHASE. Any OTHER kind on OUR session (already booked, closed, ...) is a conflict.
+    own_kinds = {u.get("conflictKind") for u in result.get("unbookableSessions") or []
+                 if u.get("sessionId") == session_id}
+    if result.get("newPurchaseConflictMessages") or own_kinds - {"INPUT_PURCHASE"}:
         raise WriteRefused("conflict_preview_not_clean")
     body = w.upsert(child_id, purchase)
     ids = purchase_ids(body)

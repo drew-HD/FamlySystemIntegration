@@ -147,17 +147,30 @@ class BookingTests(Base):
 
     def test_a_dirty_preview_or_a_blocked_session_stops_before_any_write(self):
         for preview in ({"newPurchaseConflictMessages": [{"severity": "ERROR"}]},
-                        {"unbookableSessions": [{"sessionId": "s-morning"}]}):
+                        {"unbookableSessions": [{"sessionId": "s-morning", "conflictKind": "ALREADY_BOOKED"}]},
+                        {"unbookableSessions": [{"sessionId": "s-morning", "conflictKind": "ANOTHER_INPUT_PURCHASE"}]}):
             result, _rest, gql, _out = self.go(["booking"], gql=FakeGql(preview=preview))
             self.assertNotIn("UpsertPurchase", gql.ops())
             self.assertEqual(result["writeRequests"], 0)
+
+    def test_the_session_being_booked_marked_input_purchase_is_not_a_conflict(self):
+        preview = {"newPurchaseConflictMessages": [],
+                   "unbookableSessions": [{"sessionId": "s-morning", "conflictKind": "INPUT_PURCHASE"},
+                                          {"sessionId": "s-other", "conflictKind": "ANOTHER_INPUT_PURCHASE"}]}
+        _r, _rest, gql, _out = self.go(["booking"], gql=FakeGql(preview=preview))
+        self.assertIn("UpsertPurchase", gql.ops())
+        self.assertEqual(gql.ops()[-1], "DeletePurchase")
 
     def test_pricing_group_by_age_and_hard_errors(self):
         self.assertEqual(writer.age_band(date(2023, 11, 25), TODAY), "under3")
         self.assertEqual(writer.age_band(date(2023, 11, 24), TODAY), "over3")      # turns 3 today
         self.assertEqual(writer.pricing_group_for("HDCW", date(2020, 1, 1), TODAY), GROUP_O3)
+        self.assertTrue(writer.pricing_group_for("HDWEST", date(2024, 1, 1), TODAY).startswith("3be14e3c"))
+        self.assertTrue(writer.pricing_group_for("HDWEST", date(2020, 1, 1), TODAY).startswith("3773609b"))
+        self.assertTrue(writer.pricing_group_for("HDCITY", date(2024, 1, 1), TODAY).startswith("18b50271"))
+        self.assertTrue(writer.pricing_group_for("HDCITY", date(2020, 1, 1), TODAY).startswith("78d46103"))
         with self.assertRaises(writer.WriteRefused):
-            writer.pricing_group_for("HDWEST", date(2024, 1, 1), TODAY)           # unmapped site
+            writer.pricing_group_for("HDELSEWHERE", date(2024, 1, 1), TODAY)       # unmapped site
         bad = json.loads(json.dumps(LOOKUP))
         bad["data"]["finance"]["revenueItems"]["sessionVersions"][0]["pricing"][0]["adHocPrice"] = None
         with self.assertRaises(writer.WriteRefused):
