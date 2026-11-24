@@ -139,6 +139,14 @@ class PricingAndHoldTests(Case):
         self.assertEqual(plan["discountAmount"], "73.13")
         self.assertEqual(self.plan([kid()])["discountAmount"], "0.00")
 
+    def test_a_past_date_is_a_hold_at_every_stage(self):
+        for stage in ("Approved", "Ad Hoc Started", "Ad Hoc Completed", "Closed Lost"):
+            plan = planner.build_plan(deal(ad_hoc_date_1="2026-11-02"), stage, [Contact("mum@x.org")],
+                                      Index({"c1": kid()}), planner.Deps(
+                                          has_plan=lambda c: False, read_sessions=lambda c, d: LOOKUP,
+                                          preview=lambda c, p, d: {}, price_child_for_site=lambda s: "t"), TODAY)
+            self.assertIn("session_date_past", plan["holds"], stage)
+
     def test_money_and_booking_holds(self):
         for bad in ("abc", "10", "1.5", "-0.1"):
             self.assertIn("discount_invalid", self.plan([kid()], adhoc_discount=bad)["holds"], bad)

@@ -119,7 +119,9 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
         holds.append("site_unmapped")
         return plan
 
-    codes, _dates = adhoc.session_codes(deal, stage, today)
+    # Past dates are ALWAYS a hold here, whatever the stage: the audit exempts Started / Completed deals (their
+    # sessions have happened), but the pipeline must never book a session in the past.
+    codes, _dates = adhoc.session_codes(deal, None, today)
     holds += [c for c in codes if c not in UNUSED_CODES]
     sessions = deal_sessions(deal)
     # adhoc_discount is stored as a FRACTION of the ad hoc total (0.05 = 5%, 0.325 = 32.5%; checked against the
