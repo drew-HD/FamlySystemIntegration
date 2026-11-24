@@ -1,0 +1,9 @@
+# create-test-children: the ONLY write in this package; payloads are always isTestChild true.
+mutation SeedChildCreate($children: [ChildInput!]!) {
+  children {
+    create(children: $children) {
+      id
+      externalId
+    }
+  }
+}
