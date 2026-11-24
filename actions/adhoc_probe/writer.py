@@ -31,12 +31,15 @@ from actions.testchild_seed import runner as seed
 HERE = Path(__file__).parent
 END_DATE_QUERY = HERE / "edit_active_dates.graphql"
 UPSERT_QUERY = HERE / "upsert_purchase.graphql"
+UPSERT_DETAIL_QUERY = HERE / "upsert_purchase_detail.graphql"
 DELETE_QUERY = HERE / "delete_purchase.graphql"
 END_DATE_OP, UPSERT_OP, DELETE_OP = "EditChildActiveDates", "UpsertPurchase", "DeletePurchase"
 
-MAX_WRITES = 8
+MAX_WRITES = 12
 TAG_TITLE = "Ad Hoc Only"
-STEPS = ("end-date", "tag", "booking")
+STEPS = ("end-date", "tag", "booking", "create-variants", "left-booking", "discount")
+VARIANTS = {"HDCW_NOEND": "no end date at all", "HDCW_LEFT": "enrolment already ended (2026-06-30)"}
+LEFT_END = "2026-06-30"
 SESSION_TITLE = "Morning"            # the plain ad hoc session; the "(F) ..." variants carry no ad hoc price
 BOOKING_DAY = "MONDAY"
 
@@ -93,8 +96,8 @@ def purchase_ids(body: Any) -> list[str]:
 class Writer:
     """The ONLY write paths."""
 
-    def __init__(self, rest, gql, children: dict[str, str]):
-        self.rest, self.gql = rest, gql
+    def __init__(self, rest, gql, children: dict[str, str], public=None):
+        self.rest, self.gql, self.public = rest, gql, public
         self.children = dict(children)               # site -> verified test child id
         self.writes = 0
         self.created_purchases: set[str] = set()
@@ -129,13 +132,28 @@ class Writer:
         self._spend()
         return self.rest.post(f"/v2/tags/{tag_id}/assign", json_body={"childId": child_id})
 
-    def upsert(self, child_id: str, purchase: dict) -> Any:
+    def create_variant(self, payload: dict) -> str:
+        """Create ONE test child (isTestChild true enforced by the seeder's guard), idempotent by external id."""
+        seed.assert_test_payload(payload)
+        found = self.public.execute(query_path=seed.LOOKUP_QUERY, operation_name=seed.LOOKUP_OP,
+                                    variables={"foreignId": payload["externalId"], "system": "URN"})
+        rows = found["data"]["children"]["listByExternalSystemReference"]["result"]
+        if rows:
+            if len(rows) > 1 or rows[0]["id"] in self.children.values():
+                raise WriteRefused("variant already exists or is ambiguous; not creating another")
+            raise WriteRefused(f"variant already exists ({rows[0]['id']}); add it to the test children store")
+        self._spend()
+        body = self.public.execute(query_path=seed.CREATE_QUERY, operation_name=seed.CREATE_OP,
+                                   variables={"children": [payload]})
+        return body["data"]["children"]["create"][0]["id"]
+
+    def upsert(self, child_id: str, purchase: dict, detail: bool = False) -> Any:
         self._guard(child_id)
         if purchase.get("childId") != child_id or purchase.get("productBookings") != []:
             raise WriteRefused("refusing: purchase is not for this test child, or carries product bookings")
         self._spend()
-        body = self.gql.execute(query_path=UPSERT_QUERY, operation_name=UPSERT_OP,
-                                variables={"purchases": [purchase]})
+        body = self.gql.execute(query_path=UPSERT_DETAIL_QUERY if detail else UPSERT_QUERY,
+                                operation_name=UPSERT_OP, variables={"purchases": [purchase]})
         self.created_purchases.update(purchase_ids(body))
         return body
 
@@ -219,16 +237,18 @@ def build_purchase(child_id: str, session_body: dict, group_id: str, day: date,
     return purchase, str(session.get("sessionId") or "")
 
 
-def step_booking(w: Writer, site: str, child_id: str, out, today: date) -> None:
+def step_booking(w: Writer, site: str, child_id: str, out, today: date, discount: str = "0",
+                 pricing_site: str | None = None) -> None:
     day = reads.first_monday_after(today)
     child = w.summary(child_id)["child"]
     birthday = date.fromisoformat(str(child.get("birthday"))[:10])
-    group_id = pricing_group_for(site, birthday, day)
+    group_id = pricing_group_for(pricing_site or site, birthday, day)
     lookup = w.gql.execute(query_path=reads.SESSIONS_QUERY, operation_name=reads.SESSIONS_OP,
                            variables={"childIds": [child_id], "validOnDate": day.isoformat()})
     purchase, session_id = build_purchase(child_id, lookup, group_id, day)
+    purchase["discountAmount"] = discount
     out(f"  {site}: booking {SESSION_TITLE} on {day} ({day.strftime('%A')}), group {group_id[:8]}, "
-        f"price {purchase['sessionBookings'][0]['bookedPrice']}")
+        f"price {purchase['sessionBookings'][0]['bookedPrice']}, discountAmount sent {discount!r}")
     preview = w.gql.execute(query_path=reads.CONFLICTS_QUERY, operation_name=reads.CONFLICTS_OP,
                             variables={"childId": child_id, "purchases": [purchase], "date": day.isoformat()})
     result = (((preview.get("data") or {}).get("finance") or {}).get("purchases") or {}).get("previewUpdate") or {}
@@ -238,7 +258,7 @@ def step_booking(w: Writer, site: str, child_id: str, out, today: date) -> None:
                  if u.get("sessionId") == session_id}
     if result.get("newPurchaseConflictMessages") or own_kinds - {"INPUT_PURCHASE"}:
         raise WriteRefused("conflict_preview_not_clean")
-    body = w.upsert(child_id, purchase)
+    body = w.upsert(child_id, purchase, detail=discount != "0")
     ids = purchase_ids(body)
     out(f"  {site}: UpsertPurchase created {len(ids)} purchase(s): {', '.join(ids) or 'NONE FOUND IN RESPONSE'}")
     out(f"  {site}: response: {json.dumps(body.get('data'))[:500]}")
@@ -252,8 +272,67 @@ def step_booking(w: Writer, site: str, child_id: str, out, today: date) -> None:
         raise
 
 
+def variant_payload(label: str, site_id: str, group_id: str) -> dict:
+    """A test child like create-test-children makes, but HDCW_NOEND has NO lastDay and HDCW_LEFT has a past one."""
+    payload = seed.make_child_input(label.replace("_", "-"), site_id, group_id)
+    relation = payload["sitesRelation"][0]
+    if label == "HDCW_NOEND":
+        relation.pop("lastDay")
+    else:
+        relation["lastDay"] = LEFT_END
+    return payload
+
+
+def step_create_variants(w: Writer, out, store: Path) -> dict[str, str]:
+    site_id, group_id = seed.resolve_site("HDCW")
+    created = {}
+    for label, what in VARIANTS.items():
+        if label in w.children:
+            out(f"  {label}: already in the store ({w.children[label]}); not created again")
+            continue
+        try:
+            child_id = w.create_variant(variant_payload(label, site_id, group_id))
+        except WriteRefused as exc:
+            out(f"  {label}: STOPPED, {exc}")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            body = getattr(exc, "errors", None) or getattr(exc, "body", None) or str(exc)
+            out(f"  {label} ({what}): create REJECTED, {type(exc).__name__}: {json.dumps(body, default=str)[:500]}")
+            continue
+        w.children[label] = child_id
+        created[label] = child_id
+        after = w.summary(child_id)["child"]
+        out(f"  {label} ({what}): created {child_id}; summary isTestChild={after.get('isTestChild')} "
+            f"startDate={after.get('localStartDate')!r} endDate={after.get('endDate')!r}")
+    if created:
+        known = json.loads(store.read_text(encoding="utf-8")) if store.exists() else {}
+        known.update(created)
+        store.write_text(json.dumps(known, indent=2, sort_keys=True), encoding="utf-8")
+        out(f"  ids saved to {store} (ids only)")
+    return created
+
+
+def load_variants(rest, store: Path) -> dict[str, str]:
+    """The extra test children (HDCW_NOEND / HDCW_LEFT) from the store, kept only if verified isTestChild."""
+    try:
+        data = json.loads(store.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    ok = {}
+    for label in VARIANTS:
+        child_id = data.get(label)
+        if isinstance(child_id, str):
+            try:
+                if seed.is_test_child(rest.get(f"/v2/children/{child_id}/summary")):
+                    ok[label] = child_id
+            except Exception:  # noqa: BLE001
+                pass
+    return ok
+
+
 def run(confirm: bool, steps: list[str], booking_site: str, rest, gql, out: Callable[[str], None] = print,
-        today: date | None = None, store_path: Path | None = None) -> dict:
+        today: date | None = None, store_path: Path | None = None, public=None,
+        discount: str = "10") -> dict:
     if not confirm:
         raise WriteRefused("refusing without --confirm; nothing was written")
     if not steps or any(s not in STEPS for s in steps):
@@ -264,13 +343,24 @@ def run(confirm: bool, steps: list[str], booking_site: str, rest, gql, out: Call
         children = reads.verify_test_children(rest, reads.load_test_children(store_path))
     except reads.ProbeRefused as exc:
         raise WriteRefused(str(exc)) from None
-    w = Writer(rest, gql, children)
+    store = store_path or seed.STORE_PATH
+    children.update(load_variants(rest, store))
+    w = Writer(rest, gql, children, public)
     out(f"CAPS: at most {MAX_WRITES} write requests; test children only: "
         + ", ".join(f"{s}={c}" for s, c in children.items()))
     outcome: dict[str, dict[str, str]] = {}
     for step in steps:
         out(f"=== step {step} ===")
-        targets = {booking_site: children.get(booking_site)} if step == "booking" else children
+        if step == "create-variants":
+            if public is None:
+                raise WriteRefused("create-variants needs the public client")
+            step_create_variants(w, out, store)
+            outcome["create-variants"] = {k: w.children.get(k, "missing") for k in VARIANTS}
+            continue
+        if step == "left-booking":
+            targets = {"HDCW_LEFT": w.children.get("HDCW_LEFT")}
+        else:
+            targets = {booking_site: children.get(booking_site)} if step in ("booking", "discount") else children
         for site, child_id in targets.items():
             if not child_id:
                 outcome.setdefault(step, {})[site] = "no_verified_test_child"
@@ -281,6 +371,10 @@ def run(confirm: bool, steps: list[str], booking_site: str, rest, gql, out: Call
                     step_end_date(w, site, child_id, out)
                 elif step == "tag":
                     step_tag(w, site, child_id, out)
+                elif step == "left-booking":
+                    step_booking(w, site, child_id, out, today or date.today(), pricing_site="HDCW")
+                elif step == "discount":
+                    step_booking(w, site, child_id, out, today or date.today(), discount=discount)
                 else:
                     step_booking(w, site, child_id, out, today or date.today())
                 outcome.setdefault(step, {})[site] = "ok"
