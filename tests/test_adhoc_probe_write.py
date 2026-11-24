@@ -165,8 +165,12 @@ class BookingTests(Base):
         self.assertEqual(writer.age_band(date(2023, 11, 25), TODAY), "under3")
         self.assertEqual(writer.age_band(date(2023, 11, 24), TODAY), "over3")      # turns 3 today
         self.assertEqual(writer.pricing_group_for("HDCW", date(2020, 1, 1), TODAY), GROUP_O3)
+        self.assertTrue(writer.pricing_group_for("HDWEST", date(2024, 1, 1), TODAY).startswith("3be14e3c"))
+        self.assertTrue(writer.pricing_group_for("HDWEST", date(2020, 1, 1), TODAY).startswith("3773609b"))
+        self.assertTrue(writer.pricing_group_for("HDCITY", date(2024, 1, 1), TODAY).startswith("18b50271"))
+        self.assertTrue(writer.pricing_group_for("HDCITY", date(2020, 1, 1), TODAY).startswith("78d46103"))
         with self.assertRaises(writer.WriteRefused):
-            writer.pricing_group_for("HDWEST", date(2024, 1, 1), TODAY)           # unmapped site
+            writer.pricing_group_for("HDELSEWHERE", date(2024, 1, 1), TODAY)       # unmapped site
         bad = json.loads(json.dumps(LOOKUP))
         bad["data"]["finance"]["revenueItems"]["sessionVersions"][0]["pricing"][0]["adHocPrice"] = None
         with self.assertRaises(writer.WriteRefused):
