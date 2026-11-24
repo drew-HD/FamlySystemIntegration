@@ -158,10 +158,11 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
         mine = [(f, l) for s, f, l in child.relations if s == site_id]
         if not mine:
             holds.append("child_not_at_site")
-        elif any(f and sessions[0][0].isoformat() < f for f, _l in mine):
-            # Booking AFTER an enrolment has ended is accepted by Famly (proved on a test child), so an ended
-            # enrolment is no hold. A session BEFORE the enrolment starts is untested: hold it.
-            holds.append("child_starts_after_first_session")
+        else:
+            if any(f and sessions[0][0].isoformat() < f for f, _l in mine):
+                holds.append("child_starts_after_first_session")
+            # An enrolment that has already ENDED is no hold: Famly accepts a booking after the end date (proved on
+            # a test child), so the session is simply added. A session BEFORE the enrolment starts is untested.
 
     # ----- sessions and prices ------------------------------------------------------------------------------
     lookup_child = child.id if child else deps.price_child_for_site(site)

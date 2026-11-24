@@ -96,3 +96,6 @@ From Drew's browser-network screenshots (kept in the gitignored `screenshots/` f
 - Discount: `discountAmount "10"` on a 75.00 booking came back `10.00`, total `65.00`: a FLAT amount off the purchase.
 - On HubSpot `adhoc_discount` is a FRACTION (live values 0.025, 0.05, 0.1, 0.15, 0.325, 0.45, 0.5), so discountAmount = ad hoc total x fraction, rounded half up to the penny. Values outside 0..1 are a hold (`discount_invalid`).
 - Test children now: HDCITY, HDCW, HDWEST, plus HDCW_NOEND and HDCW_LEFT (ids in var/test_children.json).
+
+## Ended enrolments are NOT a hold (Drew, 2026-11-24)
+Famly accepts a booking after an enrolment has ended (proved on a test child), so the session is simply added, for plan and no-plan children alike; the end date is not moved. A session BEFORE the enrolment starts is untested and stays a hold (`child_starts_after_first_session`). Names may be printed to the terminal (never logged).

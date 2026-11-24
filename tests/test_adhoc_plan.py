@@ -70,17 +70,21 @@ class MatchTests(Case):
 
 class WhoAndStepsTests(Case):
     def test_existing_child_without_plan_is_ad_hoc_only(self):
-        plan = self.plan([kid(end="2026-07-31")])
+        plan = self.plan([kid()])
         self.assertIs(plan["adHocOnly"], True)
         self.assertEqual(plan["steps"], ["assign_ad_hoc_only_tag", "remove_end_date_if_set", "book_2_sessions"])
-        self.assertEqual(plan["holds"], [])                   # the old end date no longer blocks: it is removed
+        self.assertEqual(plan["holds"], [])
 
-    def test_child_with_a_plan_is_regular_no_tag_and_a_left_enrolment_is_fine(self):
-        plan = self.plan([kid(end="2026-07-31")], plans=True)
+    def test_an_ended_enrolment_is_not_a_hold_the_session_is_just_booked(self):
+        for plans in (False, True):
+            plan = self.plan([kid(end="2026-07-31")], plans=plans)
+            self.assertEqual(plan["holds"], [], plans)
+            self.assertEqual(len(plan["bookings"]), 2)
+
+    def test_child_with_a_plan_is_regular_no_tag(self):
+        plan = self.plan([kid()], plans=True)
         self.assertIs(plan["adHocOnly"], False)
-        self.assertNotIn("assign_ad_hoc_only_tag", plan["steps"])
-        self.assertEqual(plan["holds"], [])                    # booking after leaving was proved on a test child
-        self.assertEqual(plan["steps"], ["book_2_sessions"])
+        self.assertEqual((plan["steps"], plan["holds"]), (["book_2_sessions"], []))
 
     def test_new_child_is_created_without_an_end_date(self):
         plan = self.plan([], contacts=[Contact("new@x.org")])
