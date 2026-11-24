@@ -106,3 +106,10 @@ Famly accepts a booking after an enrolment has ended (proved on a test child), s
 - A webhook job must be an Approved deal in the Ad Hoc pipeline, else `held` `stage_not_eligible`. A CLI job may be any stage (the plan shows the flag `stage_not_approved`).
 - Commands: `adhoc-enqueue --deal-id ID`, `adhoc-worker [--once]`, `adhoc-status [--deal-id ID]`.
 - Order of the remaining steps: 2 Slack gate (plan approval + the child-match question with child name and deal id), 3 writes behind `live`, 4 the intake webhook last.
+
+## Worker, step 2 (built, fakes only): the Slack gate in dry mode
+- Same channel as onboarding (SLACK_CHANNEL_ID), same signed `/slack/interactivity` route; anyone in the channel may click. New button ids: `adhoc_approve`, `adhoc_reject`, `adhoc_match_yes`, `adhoc_match_new`, `adhoc_retry` (`integrations/slack.py`, routed in `server.py` and `web_registry.py`; `famly-intake` needs a RESTART after the merge).
+- Clean plan -> "Ad hoc approval" message (deal, child, who, each session and price, total, discount, to pay, steps, plan hash) with Approve / Reject; the job waits `awaiting_approval`. Approve re-queues; the worker re-plans and, if the hash is unchanged, ends `dry_done` (nothing written in dry mode; live mode will write here). A plan that changes after approval is asked again once, then `needs_review` (`plan_unstable`).
+- Holds -> a plain-English "not done, a person needs to check" notice with a Retry button (a fresh job, same enqueue rules).
+- A lone `parent_email_matches_a_different_child` with exactly one candidate -> the CHILD-MATCH question with the Famly child's name and the deal id (the one message that carries a name; the name comes from memory at post time and is never stored). "That's the child" re-plans with that child confirmed; "Create a new child" re-plans as a new child; Reject holds the job. A deal's own URN / recorded id / reference match is never overridden by this answer.
+- Every click is an atomic state change with a per-request nonce and a plan-hash prefix, so a double click or an old message does nothing. If Slack refuses a post the job is held `slack_post_failed` rather than left waiting.

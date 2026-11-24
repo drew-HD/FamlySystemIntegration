@@ -21,6 +21,7 @@ from actions.contact_lookup import web as contact_lookup_web
 from actions.create_timeline import web as create_timeline_web
 from actions.plan_status import web as plan_status_web
 from actions.delete_plans import web as delete_plans_web  # TEMPORARY -- see its module docstring
+from actions.adhoc import approval as adhoc_approval
 from actions.onboard import approval as onboard_approval
 from actions.onboard import web as onboard_web
 from actions.plan_write import approval as plan_write_approval
@@ -65,6 +66,9 @@ def handle_slack_click(
     # Onboarding Gate A buttons carry a job, not a plan preview.
     if action_id in _slack.ONBOARD_ACTIONS:
         return onboard_approval.handle_click(action_id, preview_id, user)
+    # Ad hoc pipeline buttons carry an ad hoc job.
+    if action_id in _slack.ADHOC_ACTIONS:
+        return adhoc_approval.handle_click(action_id, preview_id, user)
     return SLACK_CLICK_HANDLER(
         action_id, preview_id, user, trigger_id, response_url=response_url
     )

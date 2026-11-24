@@ -36,7 +36,13 @@ class Readers:
             self._test_children = {}
 
     def famly_index(self) -> audit.Index:
-        return audit.Index(audit.fetch_children(self.public, self._urn._all_institution_ids()))
+        self._index = audit.Index(audit.fetch_children(self.public, self._urn._all_institution_ids()))
+        return self._index
+
+    def child_name(self, child_id: str) -> str | None:
+        """The child's Famly name from the last Famly pull. Held in memory only; for the Slack match question."""
+        child = getattr(self, "_index", None) and self._index.children.get(child_id)
+        return (child.full_name or None) if child else None
 
     def deps(self) -> planner.Deps:
         from actions.read_child_plans import runner as plans_runner
@@ -56,7 +62,8 @@ class Readers:
             read_sessions=read_sessions, preview=preview,
             price_child_for_site=lambda site: self._test_children.get(site))
 
-    def plan_deal(self, deal_id: str, index: audit.Index | None = None) -> dict:
+    def plan_deal(self, deal_id: str, index: audit.Index | None = None, confirmed_child_id: str | None = None,
+                  force_new: bool = False) -> dict:
         """The plan for one deal, or {"error": code} if it is not there or not an Ad Hoc deal."""
         stages = self.hubspot.stage_names()
         deals = adhoc.deals_by_id(self.hubspot, [str(deal_id)])
@@ -73,7 +80,8 @@ class Readers:
         except Exception:  # noqa: BLE001
             contacts = None
         plan = planner.build_plan(deal, stage or None, contacts, index or self.famly_index(), self.deps(),
-                                  self.today or date.today())
+                                  self.today or date.today(), confirmed_child_id=confirmed_child_id,
+                                  force_new=force_new)
         if contacts is None:
             plan["flags"].append("contacts_not_readable")
         return plan
