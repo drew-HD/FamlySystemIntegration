@@ -33,7 +33,7 @@ GO_STAGE = "approved"
 SLOT_TITLES = {"morning": "Morning", "afternoon": "Afternoon", "full day": "Full Day"}
 # Session-code checks that do not matter here: the ad hoc path never sends an end date.
 UNUSED_CODES = {"end_date_missing", "end_date_invalid", "end_date_before_last_session"}
-OWN_OK_KINDS = {"INPUT_PURCHASE"}
+OWN_OK_KINDS = {"INPUT_PURCHASE"}          # the session being booked, as Famly's preview marks it
 
 
 @dataclass
@@ -122,14 +122,22 @@ def date_details(deal: dict, today: date) -> dict[str, list[str]]:
                                ("session_date_weekend", weekend)) if days}
 
 
-def conflict_details(result: dict, session_ids: set) -> list[dict]:
-    """The conflicts Famly's preview reports for OUR sessions: [{"date", "kind"}], by date. Famly marks the
-    session being booked INPUT_PURCHASE (not a conflict); any other kind on it, or any message, is one."""
+def own_conflicts(result: dict, booked: set[tuple[str, str]]) -> list[dict]:
+    """The conflicts Famly's preview reports for the sessions we are actually booking: [{"date", "kind"}], by date.
+
+    `booked` is the set of (session id, ISO date) pairs in THIS booking. A preview entry counts only if it is for
+    one of those pairs: Famly also lists, on each booked date, the OTHER sessions that booking blocks
+    (`ANOTHER_INPUT_PURCHASE`), and a session that is merely booked on some other day must not match them. The
+    session being booked is marked `INPUT_PURCHASE` (not a conflict). Any message is a conflict. An entry with no
+    date is matched on the session alone (the cautious side)."""
+    sessions = {sid for sid, _day in booked}
     found = [{"date": str(m.get("date") or "")[:10], "kind": str(m.get("conflictKind") or "conflict")}
              for m in result.get("newPurchaseConflictMessages") or []]
-    found += [{"date": str(u.get("date") or "")[:10], "kind": str(u.get("conflictKind") or "conflict")}
-              for u in result.get("unbookableSessions") or []
-              if u.get("sessionId") in session_ids and u.get("conflictKind") not in OWN_OK_KINDS]
+    for u in result.get("unbookableSessions") or []:
+        day = str(u.get("date") or "")[:10]
+        ours = (u.get("sessionId"), day) in booked if day else u.get("sessionId") in sessions
+        if ours and u.get("conflictKind") not in OWN_OK_KINDS:
+            found.append({"date": day, "kind": str(u.get("conflictKind") or "conflict")})
     return sorted(found, key=lambda c: (c["date"], c["kind"]))
 
 
@@ -234,11 +242,11 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
                         "sessionBookings": bookings}
             if child is not None:
                 result = deps.preview(child.id, [purchase], sessions[0][0]) or {}
-                own = {u.get("conflictKind") for u in result.get("unbookableSessions") or []
-                       if u.get("sessionId") in set(session_ids)}
-                if result.get("newPurchaseConflictMessages") or own - OWN_OK_KINDS:
+                booked = {(sid, d.isoformat()) for sid, (d, _t) in zip(session_ids, sessions)}
+                conflicts = own_conflicts(result, booked)
+                if conflicts:
                     holds.append("conflict_preview_not_clean")
-                    plan["details"]["conflict_preview_not_clean"] = conflict_details(result, set(session_ids))
+                    plan["details"]["conflict_preview_not_clean"] = conflicts
             else:
                 flags.append("conflicts_not_checked_new_child")
         except writer.WriteRefused as exc:
