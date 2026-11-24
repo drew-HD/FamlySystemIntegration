@@ -1,0 +1,49 @@
+# READ-ONLY, INTERNAL API. Reconstructed from the web app's GetSessionsAndProducts request
+# (screenshot 2026-11-24): the products and standalone sessions bookable for a child on a date,
+# with their weekday availabilities and prices per pricing group.
+query GetSessionsAndProducts($childIds: [ChildId!], $validOnDate: LocalDate!) {
+  finance {
+    revenueItems {
+      productVersions(childIds: $childIds, validOnDate: $validOnDate) {
+        color
+        pricing { ...PurchaseModalPricing }
+        productAvailabilities { ...PurchaseModalProductAvailability }
+        productId
+        productVersionId
+        title
+        validFrom
+        validTo
+      }
+      sessionVersions(childIds: $childIds, validOnDate: $validOnDate) {
+        flexibleHours
+        type
+        color
+        pricing { ...PurchaseModalPricing }
+        sessionAvailabilities { ...PurchaseModalSessionAvailability }
+        sessionId
+        sessionVersionId
+        title
+        validFrom
+        validTo
+      }
+    }
+  }
+}
+
+fragment PurchaseModalPricing on Pricing {
+  adHocPrice
+  period
+  pricingGroupId
+  volume
+}
+
+fragment PurchaseModalProductAvailability on ProductAvailability {
+  day
+  productAvailabilityId
+}
+
+fragment PurchaseModalSessionAvailability on SessionAvailability {
+  day
+  sessionAvailabilityId
+  timeRange { from to }
+}

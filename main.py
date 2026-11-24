@@ -24,6 +24,7 @@ from actions.onboard import cli_phone_audit as onboard_phone_audit
 from actions.onboard import cli_status as onboard_status
 from actions.onboard import cli_worker as onboard_worker
 from actions.adhoc_audit import cli as adhoc_audit
+from actions.adhoc_probe import cli as adhoc_probe
 from actions.onboard_audit import cli as onboard_audit
 from actions.testchild_seed import cli as testchild_seed
 from actions.plan_check import cli as plan_check
@@ -81,6 +82,7 @@ ACTIONS = [
     hubspot_set_plan_status,
     onboard_audit,
     adhoc_audit,
+    adhoc_probe,
     testchild_seed,
     plan_check,
     onboard_quality_check,

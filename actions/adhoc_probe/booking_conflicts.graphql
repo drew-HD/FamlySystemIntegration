@@ -1,0 +1,26 @@
+# READ-ONLY (a query; previewUpdate only previews, it persists nothing), INTERNAL API.
+# Reconstructed from the web app's GetAdHocPurchaseSessionsConflicts request (screenshot 2026-11-24).
+query GetAdHocPurchaseSessionsConflicts($childId: ChildId!, $purchases: [PurchaseInput!]!, $date: LocalDate!) {
+  finance {
+    purchases {
+      previewUpdate(childId: $childId, purchases: $purchases, date: $date) {
+        newPurchaseConflictMessages { ...NewPurchaseConflictMessage }
+        unbookableSessions { ...UnbookableSession }
+      }
+    }
+  }
+}
+
+fragment NewPurchaseConflictMessage on PurchasePreviewMessage {
+  sessionId
+  conflictKind
+  severity
+  date
+  range { from to }
+}
+
+fragment UnbookableSession on PurchasePreviewUnbookableSession {
+  sessionId
+  conflictKind
+  date
+}
