@@ -17,6 +17,11 @@ def add_args(parser: argparse.ArgumentParser) -> None:
                              "Default: every deal in the Ad Hoc pipeline")
     parser.add_argument("--stage", action="append", metavar="NAME",
                         help="Only deals in this stage label (repeatable); not with --file")
+    parser.add_argument("--contacts", action="store_true",
+                        help="Also compare the deal contacts' emails with the parents on the Famly child (emails "
+                             "held in memory only, never printed or stored). Skips Closed Lost and Ad Hoc "
+                             "Completed deals unless --include-past")
+    parser.add_argument("--include-past", action="store_true", help="--contacts: do not skip Closed Lost/Completed")
     parser.add_argument("--out", metavar="PATH", help="Also write a CSV of ids and codes (use reports/)")
     parser.add_argument("--codes", metavar="CODE1,CODE2", help="--out: only rows that have ANY of these codes")
 
@@ -33,6 +38,9 @@ def handle(args: argparse.Namespace):
     if args.file and args.stage:
         print("--stage does not apply with --file", file=sys.stderr)
         raise SystemExit(3)
+    if args.include_past and not args.contacts:
+        print("--include-past only applies with --contacts", file=sys.stderr)
+        raise SystemExit(3)
     deal_ids = None
     if args.file:
         deal_ids, _hash = batch.read_file(args.file)
@@ -41,7 +49,8 @@ def handle(args: argparse.Namespace):
     hubspot = audit.ReadOnlyHubSpot()
     gql = audit.ReadOnlyGraphQL(urn_runner._public_client())
     rest = audit.ReadOnlyRest(RestClient())
-    summary, rows = runner.run(hubspot, gql, rest, deal_ids=deal_ids, stage_names=args.stage)
+    summary, rows = runner.run(hubspot, gql, rest, deal_ids=deal_ids, stage_names=args.stage,
+                               contacts=args.contacts, include_past=args.include_past)
     if args.out:
         written = runner.write_csv(args.out, rows, only_codes=(args.codes or "").split(","))
         summary["csv"] = {"rows": written}
