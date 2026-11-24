@@ -89,3 +89,13 @@ From Drew's browser-network screenshots (kept in the gitignored `screenshots/` f
 - `adhoc_discount` is a PERCENT and applies only to the ad hoc sessions being added. Famly's `discountAmount` may be an amount, not a percent: the `discount` probe step books with discountAmount "10" and reads back `discountAmount` and `total` to see what Famly does. Until then the planner holds `discount_unconfirmed`.
 - New children are created WITHOUT an end date; if Famly rejects that, create then remove the end date (`create-variants` tries it on HDCW_NOEND).
 - First dry run (4 real deals, 2026-11-24, read-only): all 4 held. 3 by `discount_unconfirmed`, 1 by `parent_email_matches_a_different_child` (a likely sibling), 1 by `session_date_past`. Prices and pricing groups came out right (75/75/150; under/over 3 by age on each date).
+
+## Probe results, round 2 (2026-11-24, test children)
+- A child created with NO `lastDay` is accepted (`HDCW_NOEND`: endDate None). No create-then-remove fallback needed.
+- A session booked AFTER a child's enrolment ended (`HDCW_LEFT`, ended 2026-06-30, booked 2026-12-28) is accepted. For leavers: just add the session; do not move the end date. Booking BEFORE an enrolment starts is untested, so the planner still holds it.
+- Discount: `discountAmount "10"` on a 75.00 booking came back `10.00`, total `65.00`: a FLAT amount off the purchase.
+- On HubSpot `adhoc_discount` is a FRACTION (live values 0.025, 0.05, 0.1, 0.15, 0.325, 0.45, 0.5), so discountAmount = ad hoc total x fraction, rounded half up to the penny. Values outside 0..1 are a hold (`discount_invalid`).
+- Test children now: HDCITY, HDCW, HDWEST, plus HDCW_NOEND and HDCW_LEFT (ids in var/test_children.json).
+
+## Ended enrolments are NOT a hold (Drew, 2026-11-24)
+Famly accepts a booking after an enrolment has ended (proved on a test child), so the session is simply added, for plan and no-plan children alike; the end date is not moved. A session BEFORE the enrolment starts is untested and stays a hold (`child_starts_after_first_session`). Names may be printed to the terminal (never logged).

@@ -2,8 +2,10 @@
 - Read docs/status.md at the start of a session; open the archive only when a task needs history.
 - Python, stdlib unittest. One module: python -m unittest tests.test_x -q. Full suite: python -m unittest discover -s tests -q (slow; once at the end).
 - Layout: actions/<name>/{runner.py,cli.py,web.py}; web_registry.py routes webhook actions; core/ clients; integrations/ Slack and catalogues; reference/ JSON (pulled by pull-* commands); var/ is gitignored personal data.
-- Never print, log or store child or parent names. Child ids only.
+- Never log child or parent names. Child ids only in logs and Slack. Exceptions are in the bullets below; names may be printed to the terminal.
 - Exception for the onboarding pipeline: names, emails, phone numbers, addresses and dates of birth may be read from HubSpot at run time and held in memory for a single call; never store, print, log, put in Slack or put in the jobs table.
+- Exception, storage (Drew, 2026-11-24): names (parent and child), emails, URNs and Famly ids may be kept on the server, but only in a gitignored folder (reports/, var/). Never commit them or write them to logs. Names may be printed to the terminal (not emails or other contact details).
+- Exception, Slack (Drew, 2026-11-24): the ad hoc child-match confirmation message ("is this the correct child?") carries the Famly child name and the HubSpot deal id so a person can check the match. No other Slack message carries a name.
 - Hard errors for anything that could misprice a plan; warnings only for cosmetic issues. Never guess a missing id.
 - Do not touch the commit path (approval.py, runner.commit) unless the task says so. Never call a write or delete against Famly outside tests.
 - The only other Famly writers are the onboarding worker (`actions/onboard`: child and contact CREATES only, live mode, allowlisted deals, Slack Gate A) and the one-off probe commands. Onboarding rules: an end date is always sent (deal value or the 4th-birthday default, written back only when empty); HubSpot never blocks Famly (missing properties are warned about and skipped); summary comparisons are flags, never stops; contacts are tried independently, bill payer first.

@@ -8,6 +8,8 @@ Phase 3 of docs/adhoc_design.md. For one HubSpot Ad Hoc deal it works out, as co
           child with a different name or date of birth is a HOLD, never a guess (it may be a new sibling).
   who     "ad hoc only" = a new child, or an existing child with no plan. Those get the Ad Hoc Only tag and
           have their end date removed. A child with a plan is a regular child: no tag, no end-date change.
+  discount  adhoc_discount is a fraction (0.05 = 5%) of the ad hoc total; Famly takes a flat amount, so
+          discountAmount = total x fraction, rounded half up to the penny.
   book    one session per dated slot: the plain Morning / Afternoon / Full Day session, priced for the child's
           pricing group (under 3 or 3 and over, by age ON that date), conflict-previewed for an existing child.
 
@@ -18,7 +20,7 @@ the plan carries ids, codes, dates and prices only.
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Callable
 
 from actions.adhoc_audit import runner as adhoc
@@ -119,13 +121,16 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     codes, _dates = adhoc.session_codes(deal, stage, today)
     holds += [c for c in codes if c not in UNUSED_CODES]
     sessions = deal_sessions(deal)
+    # adhoc_discount is stored as a FRACTION of the ad hoc total (0.05 = 5%, 0.325 = 32.5%; checked against the
+    # live deals). Famly's discountAmount is a FLAT amount, so it is computed below from the sessions total.
     try:
-        discount = Decimal(str(deal.get("adhoc_discount") or "0"))
+        fraction = Decimal(str(deal.get("adhoc_discount") or "0"))
     except Exception:  # noqa: BLE001
-        discount = None
-    if discount is None or discount != 0:
-        holds.append("discount_unconfirmed")            # amount vs percent is not confirmed: never guessed
-        plan["discountPresent"] = True
+        fraction = None
+    if fraction is None or not (Decimal("0") <= fraction <= Decimal("1")):
+        holds.append("discount_invalid")                # not a number, or outside 0..1: never guessed or capped
+        fraction = Decimal("0")
+    plan["discountFraction"] = str(fraction)
 
     how, ids, extra = match_child(deal, deal_id, contacts, index)
     plan["match"] = {"via": how, "childIds": ids}
@@ -153,11 +158,11 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
         mine = [(f, l) for s, f, l in child.relations if s == site_id]
         if not mine:
             holds.append("child_not_at_site")
-        elif plan["adHocOnly"]:
-            if any(f and sessions[0][0].isoformat() < f for f, _l in mine):
-                holds.append("child_starts_after_first_session")     # the end date will be removed; start must fit
         else:
-            holds += adhoc.enrolment_codes(child, site_id, [d for d, _t in sessions])
+            if any(f and sessions[0][0].isoformat() < f for f, _l in mine):
+                holds.append("child_starts_after_first_session")
+            # An enrolment that has already ENDED is no hold: Famly accepts a booking after the end date (proved on
+            # a test child), so the session is simply added. A session BEFORE the enrolment starts is untested.
 
     # ----- sessions and prices ------------------------------------------------------------------------------
     lookup_child = child.id if child else deps.price_child_for_site(site)
@@ -175,8 +180,12 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
                 total += Decimal(booking["bookedPrice"])
                 plan["bookings"].append({"date": day.isoformat(), "session": title, "price": booking["bookedPrice"],
                                          "pricingGroup": group, "ageBand": writer.age_band(birthday, day)})
+            discount_amount = (total * fraction).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             plan["total"] = f"{total:.2f}"
-            purchase = {"childId": child.id if child else None, "discountAmount": "0", "productBookings": [],
+            plan["discountAmount"] = f"{discount_amount:.2f}"
+            plan["totalAfterDiscount"] = f"{total - discount_amount:.2f}"
+            purchase = {"childId": child.id if child else None, "discountAmount": f"{discount_amount:.2f}",
+                        "productBookings": [],
                         "sessionBookings": bookings}
             if child is not None:
                 result = deps.preview(child.id, [purchase], sessions[0][0]) or {}
@@ -219,7 +228,9 @@ def describe(plan: dict) -> list[str]:
     for b in plan["bookings"]:
         lines.append(f"    {b['date']} {b['session']:<9} {b['price']:>7}  {b['ageBand']} group {b['pricingGroup'][:8]}")
     if plan.get("total"):
-        lines.append(f"    total {plan['total']}")
+        lines.append(f"    total {plan['total']}"
+                     + (f", discount {plan['discountFraction']} = -{plan['discountAmount']}, "
+                        f"to pay {plan['totalAfterDiscount']}" if plan["discountAmount"] != "0.00" else ""))
     lines.append(f"    steps: {', '.join(plan['steps']) or 'none'}")
     lines.append(f"    HOLDS: {', '.join(plan['holds']) or 'none'}" + (f"   flags: {', '.join(plan['flags'])}"
                                                                       if plan["flags"] else ""))
