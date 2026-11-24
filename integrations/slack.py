@@ -66,6 +66,15 @@ ACTION_ONBOARD_REJECT = "onboard_reject"
 ACTION_ONBOARD_RETRY = "onboard_retry"
 ONBOARD_ACTIONS = (ACTION_ONBOARD_APPROVE, ACTION_ONBOARD_REJECT, ACTION_ONBOARD_RETRY)
 
+# The ad hoc pipeline's own buttons (actions/adhoc/approval.py). Same channel, same signing, same value format.
+ACTION_ADHOC_APPROVE = "adhoc_approve"
+ACTION_ADHOC_REJECT = "adhoc_reject"
+ACTION_ADHOC_MATCH_YES = "adhoc_match_yes"
+ACTION_ADHOC_MATCH_NEW = "adhoc_match_new"
+ACTION_ADHOC_RETRY = "adhoc_retry"
+ADHOC_ACTIONS = (ACTION_ADHOC_APPROVE, ACTION_ADHOC_REJECT, ACTION_ADHOC_MATCH_YES, ACTION_ADHOC_MATCH_NEW,
+                 ACTION_ADHOC_RETRY)
+
 # Interaction types Slack posts to the same endpoint.
 TYPE_BLOCK_ACTIONS = "block_actions"
 TYPE_VIEW_SUBMISSION = "view_submission"
@@ -872,6 +881,40 @@ def _onboard_retry_blocks(text: str, value: str) -> list:
             ],
         },
     ]
+
+
+def _button(label: str, action_id: str, value: str, style: str | None = None) -> dict:
+    button = {"type": "button", "text": {"type": "plain_text", "text": label, "emoji": True},
+              "action_id": action_id, "value": value}
+    if style:
+        button["style"] = style
+    return button
+
+
+def _adhoc_blocks(text: str, buttons: list) -> list:
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            {"type": "actions", "elements": buttons}]
+
+
+def post_adhoc_gate(text: str, value: str) -> str | None:
+    """The ad hoc plan approval request: Approve / Reject. Returns a message ref or None. Never raises."""
+    return _post_onboard_blocks(text, _adhoc_blocks(text, [
+        _button("Approve", ACTION_ADHOC_APPROVE, value, "primary"),
+        _button("Reject", ACTION_ADHOC_REJECT, value, "danger")]), "ad hoc approval request")
+
+
+def post_adhoc_match(text: str, value: str) -> str | None:
+    """The ad hoc child-match question: That's the child / Create a new child / Reject."""
+    return _post_onboard_blocks(text, _adhoc_blocks(text, [
+        _button("That's the child", ACTION_ADHOC_MATCH_YES, value, "primary"),
+        _button("Create a new child", ACTION_ADHOC_MATCH_NEW, value),
+        _button("Reject", ACTION_ADHOC_REJECT, value, "danger")]), "ad hoc child-match question")
+
+
+def post_adhoc_hold(text: str, value: str) -> str | None:
+    """A hold notice with one Retry button."""
+    return _post_onboard_blocks(text, _adhoc_blocks(text, [_button("Retry", ACTION_ADHOC_RETRY, value)]),
+                                "ad hoc hold notice")
 
 
 def post_onboard_gate(text: str, value: str) -> str | None:

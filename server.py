@@ -259,6 +259,7 @@ def slack_interactivity():
         slack.ACTION_REJECT,
         slack.ACTION_ADJUST,
         *slack.ONBOARD_ACTIONS,
+        *slack.ADHOC_ACTIONS,
     ):
         logger.warning(
             "SLACK INTERACTION ignored: unrecognised action=%s preview_id=%s",

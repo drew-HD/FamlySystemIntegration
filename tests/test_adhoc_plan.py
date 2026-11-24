@@ -68,6 +68,32 @@ class MatchTests(Case):
         self.assertIn("child_ambiguous", self.plan([kid("a"), kid("b")])["holds"])
 
 
+class SlackAnswerTests(Case):
+    def test_candidates_are_reported_and_the_slack_answers_are_applied(self):
+        other = kid(name="Ada Quill", birthday="2022-02-02")
+        asked = self.plan([other])
+        self.assertEqual(asked["match"]["candidateIds"], ["c1"])
+        self.assertIn("parent_email_matches_a_different_child", asked["holds"])
+        confirmed = planner.build_plan(deal(), "Approved", [Contact("mum@x.org")], Index({"c1": other}), self.deps(),
+                                       TODAY, confirmed_child_id="c1")
+        self.assertEqual((confirmed["match"]["via"], confirmed["match"]["childIds"], confirmed["holds"]),
+                         ("slack_confirmed", ["c1"], []))
+        new = planner.build_plan(deal(), "Approved", [Contact("mum@x.org")], Index({"c1": other}), self.deps(),
+                                 TODAY, force_new=True)
+        self.assertEqual((new["match"]["childIds"], new["holds"], new["steps"][0]),
+                         ([], [], "create_child_no_end_date"))
+        self.assertIn("new_child_confirmed_in_slack", new["flags"])
+
+    def test_force_new_never_overrides_a_match_the_deal_itself_carries(self):
+        plan = planner.build_plan(deal(famly_childid="c1"), "Approved", [Contact("mum@x.org")],
+                                  Index({"c1": kid(emails=())}), self.deps(), TODAY, force_new=True)
+        self.assertEqual(plan["match"]["childIds"], ["c1"])
+
+    def deps(self):
+        return planner.Deps(has_plan=lambda c: False, read_sessions=lambda c, d: LOOKUP,
+                            preview=lambda c, p, d: {}, price_child_for_site=lambda s: "t")
+
+
 class WhoAndStepsTests(Case):
     def test_existing_child_without_plan_is_ad_hoc_only(self):
         plan = self.plan([kid()])

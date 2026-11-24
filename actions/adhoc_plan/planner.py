@@ -103,7 +103,8 @@ def deal_sessions(deal: dict) -> list[tuple[date, str]]:
     return sorted(set(out))
 
 
-def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today: date) -> dict:
+def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today: date,
+               confirmed_child_id: str | None = None, force_new: bool = False) -> dict:
     deal_id = str(deal["id"])
     plan: dict[str, Any] = {"dealId": deal_id, "stage": stage, "holds": [], "flags": [], "steps": [],
                             "match": {"via": "none", "childIds": []}, "adHocOnly": None, "bookings": []}
@@ -132,8 +133,18 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
         fraction = Decimal("0")
     plan["discountFraction"] = str(fraction)
 
-    how, ids, extra = match_child(deal, deal_id, contacts, index)
+    # A person's answer to the Slack match question: "that is the child" or "create a new child". It never
+    # overrides a match the deal itself carries (reference, recorded id, URN).
+    if confirmed_child_id and confirmed_child_id in index.children:
+        how, ids, extra = "slack_confirmed", [confirmed_child_id], []
+    else:
+        how, ids, extra = match_child(deal, deal_id, contacts, index)
+        if force_new and not ids:
+            extra = [e for e in extra if e != "HOLD:parent_email_matches_a_different_child"]
+            flags.append("new_child_confirmed_in_slack")
     plan["match"] = {"via": how, "childIds": ids}
+    if "HOLD:parent_email_matches_a_different_child" in extra:
+        plan["match"]["candidateIds"] = adhoc.email_candidates(contacts, index)
     holds += [e.removeprefix("HOLD:") for e in extra if e.startswith("HOLD:")]
     flags += [e for e in extra if not e.startswith("HOLD:")]
     if len(ids) > 1:

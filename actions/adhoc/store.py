@@ -62,14 +62,29 @@ CREATE TABLE IF NOT EXISTS adhoc_jobs (
     last_error_code TEXT,
     claimed_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    approval_nonce TEXT,
+    approved_hash TEXT,
+    approval_ref TEXT,
+    reask_count INTEGER NOT NULL DEFAULT 0,
+    question TEXT,
+    candidate_child_id TEXT,
+    match_decision TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS adhoc_one_active_per_deal
     ON adhoc_jobs (deal_id) WHERE status IN ('queued', 'awaiting_approval', 'writing');
 CREATE INDEX IF NOT EXISTS adhoc_status ON adhoc_jobs (status, created_at);
 """
 
-_UPDATABLE = {"mode", "plan_hash", "plan_json", "holds", "flags", "child_id", "last_error_code"}
+# Columns added after step 1 shipped (a store created then does not have them).
+_ADDED_COLUMNS = (
+    ("approval_nonce", "TEXT"), ("approved_hash", "TEXT"), ("approval_ref", "TEXT"),
+    ("reask_count", "INTEGER NOT NULL DEFAULT 0"), ("question", "TEXT"), ("candidate_child_id", "TEXT"),
+    ("match_decision", "TEXT"),
+)
+
+_UPDATABLE = {"mode", "plan_hash", "plan_json", "holds", "flags", "child_id", "last_error_code", "approval_nonce",
+              "approved_hash", "approval_ref", "reask_count", "question", "candidate_child_id", "match_decision"}
 _JSON_FIELDS = {"holds", "flags"}
 
 
@@ -90,6 +105,13 @@ class Job:
     holds: list | None = None
     flags: list | None = None
     plan: dict | None = None
+    approval_nonce: str | None = None
+    approved_hash: str | None = None
+    approval_ref: str | None = None
+    reask_count: int = 0
+    question: str | None = None            # what an awaiting_approval job is asking: "plan" or "match"
+    candidate_child_id: str | None = None  # the Famly child a "match" question offers
+    match_decision: str | None = None      # "confirmed" (the candidate is the child) | "new" (create a new child)
 
 
 def store_path() -> Path:
@@ -111,10 +133,25 @@ def _open():
     try:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.executescript(_SCHEMA)
+        _migrate(connection)
         yield connection
         connection.commit()
     finally:
         connection.close()
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Add columns an older store lacks. An ADD COLUMN that loses a race to another process is the column
+    already being there, so it is ignored; any other error is raised."""
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(adhoc_jobs)")}
+    for name, ddl in _ADDED_COLUMNS:
+        if name in columns:
+            continue
+        try:
+            connection.execute(f"ALTER TABLE adhoc_jobs ADD COLUMN {name} {ddl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
 
 
 def _loads(text):
@@ -130,7 +167,9 @@ def _to_job(row: sqlite3.Row) -> Job:
         plan_hash=row["plan_hash"], child_id=row["child_id"], attempts=row["attempts"],
         last_error_code=row["last_error_code"], claimed_at=row["claimed_at"], created_at=row["created_at"],
         updated_at=row["updated_at"], holds=_loads(row["holds"]), flags=_loads(row["flags"]),
-        plan=_loads(row["plan_json"]))
+        plan=_loads(row["plan_json"]), approval_nonce=row["approval_nonce"], approved_hash=row["approved_hash"],
+        approval_ref=row["approval_ref"], reask_count=row["reask_count"], question=row["question"],
+        candidate_child_id=row["candidate_child_id"], match_decision=row["match_decision"])
 
 
 # --------------------------------------------------------------------------- #
@@ -249,6 +288,30 @@ def update(job_id: str, **fields) -> None:
     with _open() as connection:
         connection.execute(f"UPDATE adhoc_jobs SET {columns}, updated_at = ? WHERE id = ?",
                            (*values, _now(), job_id))
+
+
+def transition(job_id: str, from_status: str, to_status: str, **fields) -> bool:
+    """Atomic compare-and-set: change the status only if it is still `from_status`. Returns whether THIS call did
+    it, so a double click, or a click on a job that already moved on, does nothing the second time."""
+    assert to_status in ALL_STATUSES, to_status
+    _check_fields(fields)
+    columns = ", ".join(f"{name} = ?" for name in fields)
+    values = [_encode(name, value) for name, value in fields.items()]
+    with _open() as connection:
+        cursor = connection.execute(
+            f"UPDATE adhoc_jobs SET status = ?, claimed_at = NULL, updated_at = ?"
+            f"{', ' + columns if columns else ''} WHERE id = ? AND status = ?",
+            (to_status, _now(), *values, job_id, from_status))
+    return cursor.rowcount == 1
+
+
+def consume_hold_nonce(job_id: str, nonce: str) -> bool:
+    """Spend a held job's Retry nonce, atomically: only ONE press can win."""
+    with _open() as connection:
+        cursor = connection.execute(
+            "UPDATE adhoc_jobs SET approval_nonce = NULL, updated_at = ? "
+            "WHERE id = ? AND status = ? AND approval_nonce = ?", (_now(), job_id, HELD, nonce))
+    return cursor.rowcount == 1
 
 
 def recover_in_flight() -> int:
