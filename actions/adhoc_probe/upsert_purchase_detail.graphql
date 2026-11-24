@@ -1,0 +1,20 @@
+# Same write as upsert_purchase.graphql but ALSO selects discountAmount and total, so the `discount` probe step can
+# show how Famly treats a discount. Separate document so the proven one is untouched; an unknown field fails
+# validation before anything runs.
+mutation UpsertPurchase($purchases: [PurchaseInput!]!) {
+  finance {
+    purchases {
+      update(purchases: $purchases) {
+        id
+        discountAmount
+        total
+        sessionBookings {
+          sessionPurchaseId
+          purchaseDate
+          bookedPrice
+          pricingGroupId
+        }
+      }
+    }
+  }
+}

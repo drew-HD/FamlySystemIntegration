@@ -184,5 +184,68 @@ class BookingTests(Base):
         self.assertTrue(any("BY HAND" in line for line in out))
 
 
+class FakePublic:
+    def __init__(self, reject_noend=False, existing=()):
+        self.created, self.reject_noend, self.existing = [], reject_noend, set(existing)
+
+    def execute(self, query_path, variables, operation_name):
+        if operation_name == writer.seed.LOOKUP_OP:
+            fid = variables["foreignId"]
+            return {"data": {"children": {"listByExternalSystemReference": {
+                "result": [{"id": "old"}] if fid in self.existing else []}}}}
+        payload = variables["children"][0]
+        if self.reject_noend and "lastDay" not in payload["sitesRelation"][0]:
+            from core.client import GraphQLError
+            raise GraphQLError("lastDay required", [{"message": "lastDay required"}])
+        self.created.append(payload)
+        return {"data": {"children": {"create": [{"id": f"new-{payload['externalId']}"}]}}}
+
+
+class VariantTests(Base):
+    def go2(self, steps, public, rest=None, gql=None, store_data=None, discount="10"):
+        rest, gql, out = rest or FakeRest(), gql or FakeGql(), []
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "t.json"
+            store.write_text(json.dumps(store_data or {"HDCW": HDCW}))
+            with mock.patch.object(writer.catalogue, "load_sites", lambda: {"HDCW": {"institutionId": INST}}), \
+                    mock.patch.object(writer.seed, "resolve_site", lambda code: (INST, "grp")):
+                result = writer.run(True, steps, "HDCW", rest, gql, out.append, today=TODAY, store_path=store,
+                                    public=public, discount=discount)
+            saved = json.loads(store.read_text())
+        return result, gql, out, saved
+
+    def test_variants_one_without_end_date_one_already_left_and_ids_saved(self):
+        public = FakePublic()
+        result, _g, _o, saved = self.go2(["create-variants"], public)
+        by_id = {p["externalId"]: p["sitesRelation"][0] for p in public.created}
+        self.assertNotIn("lastDay", by_id["AATEST-HDCW-NOEND"])
+        self.assertEqual(by_id["AATEST-HDCW-LEFT"]["lastDay"], "2026-06-30")
+        self.assertTrue(all(p["isTestChild"] is True for p in public.created))
+        self.assertEqual(set(saved), {"HDCW", "HDCW_NOEND", "HDCW_LEFT"})
+        self.assertEqual(result["writeRequests"], 2)
+
+    def test_a_rejected_create_without_end_date_is_reported_not_retried(self):
+        public = FakePublic(reject_noend=True)
+        result, _g, out, saved = self.go2(["create-variants"], public)
+        self.assertEqual(result["outcome"]["create-variants"]["HDCW_NOEND"], "missing")
+        self.assertIn("HDCW_LEFT", saved)
+        self.assertTrue(any("REJECTED" in line for line in out))
+
+    def test_existing_variant_is_never_created_twice(self):
+        public = FakePublic(existing={"AATEST-HDCW-LEFT"})
+        self.go2(["create-variants"], public)
+        self.assertEqual([p["externalId"] for p in public.created], ["AATEST-HDCW-NOEND"])
+
+    def test_left_booking_uses_the_left_child_and_discount_step_sends_the_discount(self):
+        data = {"HDCW": HDCW, "HDCW_LEFT": "left-child"}
+        rest = FakeRest()
+        _r, gql, _o, _s = self.go2(["left-booking"], FakePublic(), rest=rest, store_data=data)
+        self.assertEqual(gql.calls[0][1]["childIds"], ["left-child"])
+        self.assertEqual(gql.ops()[-2:], ["UpsertPurchase", "DeletePurchase"])
+        _r, gql, _o, _s = self.go2(["discount"], FakePublic(), rest=FakeRest(), discount="10")
+        upsert = next(v for op, v in gql.calls if op == "UpsertPurchase")
+        self.assertEqual(upsert["purchases"][0]["discountAmount"], "10")
+
+
 if __name__ == "__main__":
     unittest.main()

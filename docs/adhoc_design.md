@@ -82,3 +82,10 @@ From Drew's browser-network screenshots (kept in the gitignored `screenshots/` f
 - First live version is a DRY RUN on a couple of deals before any write (`adhoc-dry-run`, read-only, built; see actions/adhoc_plan).
 - Sessions after the end of the child's Famly enrolment (all 8 such live deals): removing the end date fixes the no-plan children; children WITH a plan and an enrolment that has ended need a decision.
 - `adhoc_discount` is a HOLD (`discount_unconfirmed`) until we know whether it is an amount or a percent, and per session or per deal.
+
+## Decisions and findings (2026-11-24, evening)
+- Match-safety rule: when a parent email matches only a differently named / dated child, the pipeline must ASK IN SLACK "is this the correct child?" (buttons: that child / create new). No names in Slack: deal id and a Famly child link only. (Slack gate not built yet; the dry run currently reports it as the hold `parent_email_matches_a_different_child`.)
+- Child who has left (enrolment ended, has a plan): first try to book the session as is. Read-only evidence: the conflict preview raises no conflict for a session after the enrolment end date (two real children). To be proven by a real booking on the HDCW_LEFT test child (`adhoc-probe-write --step create-variants --step left-booking`). If Famly refuses, move the end date to cover the session but make the plan end on the SAME day the end date used to be.
+- `adhoc_discount` is a PERCENT and applies only to the ad hoc sessions being added. Famly's `discountAmount` may be an amount, not a percent: the `discount` probe step books with discountAmount "10" and reads back `discountAmount` and `total` to see what Famly does. Until then the planner holds `discount_unconfirmed`.
+- New children are created WITHOUT an end date; if Famly rejects that, create then remove the end date (`create-variants` tries it on HDCW_NOEND).
+- First dry run (4 real deals, 2026-11-24, read-only): all 4 held. 3 by `discount_unconfirmed`, 1 by `parent_email_matches_a_different_child` (a likely sibling), 1 by `session_date_past`. Prices and pricing groups came out right (75/75/150; under/over 3 by age on each date).
