@@ -190,13 +190,14 @@ def step_tag(w: Writer, site: str, child_id: str, out) -> None:
     out(f"  {site}: tag {tag_id} assigned; present on summary = {tag_id in now}")
 
 
-def build_purchase(child_id: str, session_body: dict, group_id: str, day: date) -> tuple[dict, str]:
-    """(PurchaseInput, session id) for one plain Morning booking on `day`, priced from the lookup."""
+def build_purchase(child_id: str, session_body: dict, group_id: str, day: date,
+                   title: str = SESSION_TITLE) -> tuple[dict, str]:
+    """(PurchaseInput, session id) for one plain `title` booking on `day`, priced from the lookup."""
     items = (((session_body or {}).get("data") or {}).get("finance") or {}).get("revenueItems") or {}
     sessions = [v for v in items.get("sessionVersions") or []
-                if v.get("title") == SESSION_TITLE and v.get("type") == "StandaloneSession"]
+                if v.get("title") == title and v.get("type") == "StandaloneSession"]
     if len(sessions) != 1:
-        raise WriteRefused(f"session_{'not_found' if not sessions else 'ambiguous'} ({SESSION_TITLE})")
+        raise WriteRefused(f"session_{'not_found' if not sessions else 'ambiguous'} ({title})")
     session = sessions[0]
     day_name = day.strftime("%A").upper()
     avail = [a for a in session.get("sessionAvailabilities") or [] if a.get("day") == day_name]

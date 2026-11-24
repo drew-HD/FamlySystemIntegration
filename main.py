@@ -25,6 +25,7 @@ from actions.onboard import cli_status as onboard_status
 from actions.onboard import cli_worker as onboard_worker
 from actions.adhoc_audit import cli as adhoc_audit
 from actions.adhoc_probe import cli as adhoc_probe
+from actions.adhoc_plan import cli as adhoc_dry_run
 from actions.adhoc_probe import cli_write as adhoc_probe_write
 from actions.onboard_audit import cli as onboard_audit
 from actions.testchild_seed import cli as testchild_seed
@@ -84,6 +85,7 @@ ACTIONS = [
     onboard_audit,
     adhoc_audit,
     adhoc_probe,
+    adhoc_dry_run,
     adhoc_probe_write,
     testchild_seed,
     plan_check,
