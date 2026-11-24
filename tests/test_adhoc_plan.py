@@ -75,12 +75,12 @@ class WhoAndStepsTests(Case):
         self.assertEqual(plan["steps"], ["assign_ad_hoc_only_tag", "remove_end_date_if_set", "book_2_sessions"])
         self.assertEqual(plan["holds"], [])                   # the old end date no longer blocks: it is removed
 
-    def test_child_with_a_plan_is_regular_no_tag_and_enrolment_must_cover(self):
+    def test_child_with_a_plan_is_regular_no_tag_and_a_left_enrolment_is_fine(self):
         plan = self.plan([kid(end="2026-07-31")], plans=True)
         self.assertIs(plan["adHocOnly"], False)
         self.assertNotIn("assign_ad_hoc_only_tag", plan["steps"])
-        self.assertIn("session_outside_enrolment", plan["holds"])
-        self.assertEqual(self.plan([kid()], plans=True)["holds"], [])
+        self.assertEqual(plan["holds"], [])                    # booking after leaving was proved on a test child
+        self.assertEqual(plan["steps"], ["book_2_sessions"])
 
     def test_new_child_is_created_without_an_end_date(self):
         plan = self.plan([], contacts=[Contact("new@x.org")])
@@ -101,9 +101,19 @@ class PricingAndHoldTests(Case):
         self.assertEqual(plan["total"], "225.00")
         self.assertEqual(self.plan([kid()])["bookings"][0]["ageBand"], "under3")
 
+    def test_discount_fraction_becomes_a_flat_amount(self):
+        plan = self.plan([kid()], adhoc_discount="0.1")             # 75.00 + 150.00 = 225.00
+        self.assertEqual((plan["total"], plan["discountAmount"], plan["totalAfterDiscount"]),
+                         ("225.00", "22.50", "202.50"))
+        plan = self.plan([kid()], adhoc_discount="0.325")           # 73.125 -> rounds half up
+        self.assertEqual(plan["discountAmount"], "73.13")
+        self.assertEqual(self.plan([kid()])["discountAmount"], "0.00")
+
     def test_money_and_booking_holds(self):
-        self.assertIn("discount_unconfirmed", self.plan([kid()], adhoc_discount="10")["holds"])
-        self.assertNotIn("discount_unconfirmed", self.plan([kid()], adhoc_discount="0")["holds"])
+        for bad in ("abc", "10", "1.5", "-0.1"):
+            self.assertIn("discount_invalid", self.plan([kid()], adhoc_discount=bad)["holds"], bad)
+        self.assertEqual(self.plan([kid()], adhoc_discount="0.1")["holds"], [])
+        self.assertEqual(self.plan([kid()], adhoc_discount="0")["holds"], [])
         self.assertIn("session_date_past", self.plan([kid()], ad_hoc_date_1="2026-11-02")["holds"])
         self.assertIn("session_slot_missing", self.plan([kid()], ad_hoc_session_1="")["holds"])
         self.assertIn("site_unmapped", self.plan([kid()], location_of_interest="Mars")["holds"])
