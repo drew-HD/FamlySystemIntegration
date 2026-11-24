@@ -4,8 +4,28 @@ check the match). That name is passed in at post time from memory and is never s
 """
 
 import os
+from datetime import date
+from decimal import Decimal
 
 DRY = "[DRY RUN] "
+
+SITE_NAMES = {"HDWEST": "Westminster", "HDCW": "Canada Water", "HDCITY": "City"}
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def site_name(code) -> str:
+    return SITE_NAMES.get(str(code), str(code or "unknown site"))
+
+
+def long_date(iso: str) -> str:
+    """2026-11-20 -> '20 Nov 2026' (fixed English month names, whatever the server locale)."""
+    day = date.fromisoformat(str(iso)[:10])
+    return f"{day.day:02d} {_MONTHS[day.month - 1]} {day.year}"
+
+
+def percent(fraction) -> str:
+    """The deal's fraction as a percent: 0.05 -> '5%', 0.325 -> '32.5%'."""
+    return f"{(Decimal(str(fraction)) * 100).normalize():f}%"
 
 # Plain-English sentences for the hold codes a person can act on.
 SENTENCES = {
@@ -50,23 +70,28 @@ def _money(value) -> str:
     return f"£{value}"
 
 
-def gate_text(plan: dict, digest: str, mode: str, changed: bool = False) -> str:
+def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_name: str | None = None) -> str:
+    """The plan approval message. For an EXISTING child it carries the Famly child's name and id (Drew,
+    2026-11-24); `child_name` comes from memory at post time and is never stored."""
     dry = DRY if mode == "dry" else ""
     n = len(plan["bookings"])
     lines = [f"*{dry}Ad hoc approval: book {n} session{'s' if n != 1 else ''}*"]
     if changed:
         lines.append("⚠️ The plan changed since it was last approved; approval is needed again.")
+    lines.append(f"Deal: {deal_link(plan['dealId'])} · Site: {site_name(plan.get('site'))}")
     match = plan["match"]
-    child = (f"existing Famly child {match['childIds'][0]}" if len(match["childIds"]) == 1
-             else "a NEW child (created with no end date)")
-    lines.append(f"Deal: {deal_link(plan['dealId'])} · Site: {plan.get('site')} · Child: {child}")
-    lines.append("Who: " + ("ad hoc only (Ad Hoc Only tag, end date removed if set)" if plan["adHocOnly"]
-                            else "regular child with a plan (no tag, enrolment untouched)"))
-    for b in plan["bookings"]:
-        lines.append(f"• {b['date']} {b['session']} {_money(b['price'])} ({b['ageBand'].replace('under3', 'under 3').replace('over3', '3 and over')})")
-    lines.append(f"Total {_money(plan['total'])}"
-                 + (f" · discount -{_money(plan['discountAmount'])} ({plan['discountFraction']}) · to pay "
-                    f"{_money(plan['totalAfterDiscount'])}" if plan["discountAmount"] != "0.00" else ""))
+    if len(match["childIds"]) == 1:
+        lines.append(f"Child exists in Famly: {child_name or 'name not available'} (Famly Id: {match['childIds'][0]})")
+    else:
+        lines.append("New child: will be created in Famly (no end date)")
+    lines.append("Who: " + ("Ad hoc only child" if plan["adHocOnly"] else "Standard child booking ad hoc"))
+    for number, b in enumerate(plan["bookings"], 1):
+        lines.append(f"{number}. {long_date(b['date'])} {b['session']} {_money(b['price'])}")
+    total = f"Total {_money(plan['total'])}"
+    if plan["discountAmount"] != "0.00":
+        total += (f" · Discount {percent(plan['discountFraction'])} (-{_money(plan['discountAmount'])})"
+                  f" · To pay {_money(plan['totalAfterDiscount'])}")
+    lines.append(total)
     if "conflicts_not_checked_new_child" in plan["flags"]:
         lines.append("Conflicts: not checked (the child does not exist yet).")
     lines.append(f"Steps: {', '.join(plan['steps'])}")
@@ -79,7 +104,7 @@ def match_text(plan: dict, famly_name: str, child_id: str, mode: str) -> str:
     dry = DRY if mode == "dry" else ""
     return "\n".join([
         f"*{dry}Ad hoc: is this the correct child?*",
-        f"Deal: {deal_link(plan['dealId'])} · Site: {plan.get('site')}",
+        f"Deal: {deal_link(plan['dealId'])} · Site: {site_name(plan.get('site'))}",
         "A parent's email on this deal matches a child in Famly, but the name or date of birth on the deal is "
         "different (it may be a sibling).",
         f"Famly child: *{famly_name or 'name not available'}* (id {child_id})",

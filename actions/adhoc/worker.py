@@ -160,7 +160,9 @@ def _ask_plan(job, deps, plan, digest, run_mode, changed: bool) -> None:
     nonce = _nonce()
     store.set_status(job.id, store.AWAITING_APPROVAL, approval_nonce=nonce, question="plan", approval_ref=None,
                      reask_count=job.reask_count + (1 if changed else 0))
-    ref = deps.notifier.gate(messages.gate_text(plan, digest, run_mode, changed), job.id, digest, nonce)
+    ids = plan["match"]["childIds"]
+    name = deps.child_name(ids[0]) if len(ids) == 1 else None            # memory only, for the message
+    ref = deps.notifier.gate(messages.gate_text(plan, digest, run_mode, changed, child_name=name), job.id, digest, nonce)
     _record_post(job, ref)
 
 
