@@ -32,6 +32,7 @@ DEAL_NO_CHILD = "deal_no_child_found"
 REFERENCE_UNKNOWN_DEAL = "reference_not_operations_or_adhoc"
 STORE_CONFLICT = "already_tied_to_another_child"
 CHILD_NO_DOB = "child_without_dob"
+RECORDED_CHILD_MISSING = "recorded_child_not_in_famly"
 
 
 @dataclass
@@ -111,10 +112,17 @@ def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict],
         return by_urn.get(str(urn or "").strip().casefold(), []) if urn else []
 
     candidates: dict[str, set] = {}
+    broken: set = set()          # a source names a child that is not in Famly: the deal is not linked
 
     def offer(deal_id: str, child_id: str) -> None:
-        if deal_id and child_id in children:
-            candidates.setdefault(deal_id, set()).add(child_id)
+        if not deal_id or not child_id:
+            return
+        if child_id not in children:
+            if deal_id not in broken:
+                report.add(RECORDED_CHILD_MISSING, "", deal_id)
+            broken.add(deal_id)
+            return
+        candidates.setdefault(deal_id, set()).add(child_id)
 
     rows = []
     for child in children.values():
@@ -153,6 +161,8 @@ def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict],
     deals = []
     for deal_id, kind in sorted(kinds.items()):
         ids = sorted(candidates.get(deal_id, ()))
+        if deal_id in broken:
+            continue
         if len(ids) == 1:
             deals.append((deal_id, ids[0], kind))
         elif ids:
@@ -161,7 +171,8 @@ def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict],
         else:
             report.add(DEAL_NO_CHILD, "", deal_id)
             report.counts[f"{DEAL_NO_CHILD}:{kind}"] += 1
-    return {"children": rows, "deals": deals, "site_codes": site_codes}, report
+    shared_urns = {urn for urn, ids in by_urn.items() if len(ids) > 1}
+    return {"children": rows, "deals": deals, "site_codes": site_codes, "shared_urns": shared_urns}, report
 
 
 def write(plan: dict, report: Report) -> Counter:
@@ -173,7 +184,7 @@ def write(plan: dict, report: Report) -> Counter:
             written["children_added"] += 1
         else:
             written["children_refreshed"] += 1
-        if child.external_id:
+        if child.external_id and child.external_id.casefold() not in plan["shared_urns"]:
             result = store.add_urn(child.id, child.external_id)
             written[f"urn_{result}"] += 1
             if result == store.CONFLICT:

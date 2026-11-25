@@ -125,10 +125,19 @@ class BackfillTests(Base):
         codes = summary["codes"]
         self.assertEqual(codes[backfill.DEAL_SEVERAL_CHILDREN], 2)
         self.assertEqual(codes[backfill.URN_SEVERAL_CHILDREN], 2)
-        self.assertEqual(codes[backfill.STORE_CONFLICT], 1)           # the URN went to the first child only
+        self.assertNotIn(backfill.STORE_CONFLICT, codes)              # a shared URN is written to neither child
+        self.assertIsNone(store.by_urn("HD0001CW"))
         self.assertEqual(codes[f"{backfill.DEAL_NO_CHILD}:adhoc"], 2)  # 201 (URN on two) and 202
         self.assertIsNone(store.by_deal("101"))
         self.assertIsNone(store.by_deal("201"))
+
+    def test_recorded_child_missing_from_famly_leaves_deal_unlinked(self):
+        kids = [child("c1", refs=["101"])]
+        deals = [{"id": "101", "dealstage": "ops", "famly_childid": "gone"}]
+        summary, report = self.run_backfill(kids, deals, confirm=True)
+        self.assertEqual(summary["codes"][backfill.RECORDED_CHILD_MISSING], 1)
+        self.assertEqual(summary["deals_to_link"], {})
+        self.assertIsNone(store.by_deal("101"))
 
     def test_dry_run_writes_nothing(self):
         summary, _ = self.run_backfill([child("c1", refs=["101"])], [{"id": "101", "dealstage": "ops"}])
