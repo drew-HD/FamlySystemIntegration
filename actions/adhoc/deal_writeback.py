@@ -1,6 +1,7 @@
 """The ONLY HubSpot writes the ad hoc worker makes: the child's URN and the Famly child id onto the DEAL (Drew,
 2026-11-25: so the deal records which child it made and a Retry or a person can find it), plus (registry stage 3) a
-NOTE on a deal and the `famly_followup` dropdown on an OPERATIONS deal, so the CS team sees what needs checking
+NOTE on a deal and the `famly_followup` dropdown on an OPERATIONS deal, and `famly_plan_status` / `famly_plan_note` on the
+AD HOC deal after a booking attempt (`set_plan_status`), so the CS team sees what needs checking
 (`add_note` / `set_followup`: ids and codes only; a failure is a code, never a stop). For the URN and child id, the
 same rules as onboarding's `_write_allocated_urn` and `Syncer`:
 
@@ -97,6 +98,18 @@ class DealWriter:
             logger.error("adhoc: HubSpot follow-up write failed (%s)", type(exc).__name__)
             return "followup_failed"
         return "followup_written"
+
+    def set_plan_status(self, deal_id: str, status: str, note: str) -> str:
+        """`famly_plan_status` (plan_created | needs_attention) and the `famly_plan_note` code on the AD HOC deal, after
+        a booking attempt, so HubSpot shows which ad hoc deals are in Famly. One request each, never retried. Never
+        raises: 'status_written' | 'status_failed'."""
+        try:
+            self.client.write_plan_status(str(deal_id), status)
+            self.client.write_plan_note(str(deal_id), note)
+        except (HubSpotError, ValueError, AttributeError) as exc:
+            logger.error("adhoc: HubSpot plan status write failed (%s)", type(exc).__name__)
+            return "status_failed"
+        return "status_written"
 
     def ensure_child_id(self, deal_id: str, child_id: str) -> str:
         """Put the Famly child id on the deal after the child is confirmed. Never raises: returns a code."""

@@ -143,7 +143,7 @@ ERROR_BACKOFF_SECONDS = 5.0
 def _fail_job(job: store.Job, deps: Deps) -> None:
     """After an exception: if the booking request was already SENT the job is `needs_review` (a person must check
     Famly; Retry must not look safe), else `failed`. Nothing here may raise out of the loop."""
-    sent = False
+    sent, row = False, None
     try:
         row = store.get(job.id)
         sent = bool(row.write_sent or row.child_create_sent)       # a sent create also needs a person to look
@@ -159,9 +159,16 @@ def _fail_job(job: store.Job, deps: Deps) -> None:
         logger.error("adhoc: job %s status update hit %s", job.id, type(exc).__name__)
         return
     if sent:
+        lines = []
+        try:
+            already = any(str(o).startswith("hubspot:status_") for o in (row.outcomes or [])) if row else True
+            if row is not None and row.write_sent and not already:    # the booking was sent, status not yet set: HubSpot shows it needs a person
+                lines = _plan_status(job, deps, NEEDS_ATTENTION, ["worker_error_after_write"])
+        except Exception as exc:  # noqa: BLE001
+            logger.error("adhoc: job %s plan status hit %s", job.id, type(exc).__name__)
         try:
             deps.notifier.notice(f"⚠️ Ad hoc deal {messages.deal_link(job.deal_id)}: "
-                                 f"{messages.SENTENCES['worker_error_after_write']}")
+                                 f"{messages.SENTENCES['worker_error_after_write']}" + "".join(f"\n{l}" for l in lines))
         except Exception as exc:  # noqa: BLE001
             logger.error("adhoc: job %s notice hit %s", job.id, type(exc).__name__)
 
@@ -258,14 +265,54 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> None:
     _ask_plan(job, deps, plan, digest, run_mode, changed)
 
 
+PLAN_CREATED, NEEDS_ATTENTION = "plan_created", "needs_attention"
+
+
+def status_note(codes) -> str:
+    """The `famly_plan_note` code: the problem codes, lowercase, comma-separated, at most 100 characters (`a,b,+2`)."""
+    import re
+    clean = [re.sub(r"[^a-z0-9_:.+-]", "_", str(c).casefold()) for c in codes if c]
+    out: list[str] = []
+    for i, code in enumerate(clean):
+        rest = len(clean) - i - 1
+        candidate = ",".join(out + [code] + ([f"+{rest}"] if rest else []))
+        if len(candidate) > 100:
+            return ",".join(out + [f"+{len(clean) - i}"])[:100]
+        out.append(code)
+    return ",".join(out)
+
+
+def _plan_status(job, deps, status: str, codes) -> list[str]:
+    """After a booking attempt: `famly_plan_status` on the ad hoc deal. Returns Slack lines (a failure is a line,
+    never a stop)."""
+    if deps.deal_writer is None or not callable(getattr(deps.deal_writer, "set_plan_status", None)):
+        return []
+    try:
+        result = deps.deal_writer.set_plan_status(job.deal_id, status, status_note(codes) if status == NEEDS_ATTENTION
+                                                  else "")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("adhoc: job %s plan status hit %s", job.id, type(exc).__name__)
+        result = "status_failed"
+    try:
+        row = store.get(job.id)
+        store.update(job.id, outcomes=list(row.outcomes or []) + [f"hubspot:{result}:{status}"])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("adhoc: job %s outcome update hit %s", job.id, type(exc).__name__)
+    if result != "status_written":
+        return [f"⚠️ Needs checking: famly_plan_status could not be set to {status} on the HubSpot deal."]
+    return [f"HubSpot: famly_plan_status set to {status}."]
+
+
 def _end(job, deps, status: str, code: str, plan: dict | None = None, problems: list | None = None,
-         extra: list | None = None) -> None:
+         extra: list | None = None, after: list | None = None) -> None:
     store.set_status(job.id, status, last_error_code=",".join([code, *(extra or [])]))
     text = (messages.done_text(plan, [], {}, problems or [code], "live") if plan
             else f"⚠️ Ad hoc deal {messages.deal_link(job.deal_id)}: {messages.SENTENCES.get(code, code)}")
     if extra:                                           # codes of earlier problems (ids and codes only, no names)
         text += "\n" + "\n".join(f"• {messages.SENTENCES.get(c.split(':')[0], c)}" for c in extra) \
             + f"\nCodes: {', '.join(extra)}"
+    if after:
+        text += "\n" + "\n".join(after)
     deps.notifier.notice(text)
 
 
@@ -292,7 +339,8 @@ def _write_phase(job, deps, plan, digest: str) -> None:
     purchase = {**plan["purchase"], "childId": child_id}   # the plan hash has childId None; filled AFTER creation
     new = not plan["match"]["childIds"]
     if not store.mark_write_sent(job.id):          # persisted BEFORE the request: a job never books twice
-        _end(job, deps, store.NEEDS_REVIEW, "duplicate_write_blocked", extra=problems)
+        _end(job, deps, store.NEEDS_REVIEW, "duplicate_write_blocked", extra=problems,
+             after=_plan_status(job, deps, NEEDS_ATTENTION, ["duplicate_write_blocked", *problems]))
         return
     try:
         result = deps.writes.book(child_id, purchase)
@@ -300,7 +348,8 @@ def _write_phase(job, deps, plan, digest: str) -> None:
         _end(job, deps, store.FAILED, exc.code, extra=problems)
         return
     except writes.BookingUnknown:
-        _end(job, deps, store.NEEDS_REVIEW, "booking_outcome_unknown", extra=problems)
+        _end(job, deps, store.NEEDS_REVIEW, "booking_outcome_unknown", extra=problems,
+             after=_plan_status(job, deps, NEEDS_ATTENTION, ["booking_outcome_unknown", *problems]))
         return
     outcomes.append(f"booked:{len(purchase['sessionBookings'])}")
     store.update(job.id, outcomes=outcomes)
@@ -325,6 +374,7 @@ def _write_phase(job, deps, plan, digest: str) -> None:
     except Exception as exc:  # noqa: BLE001 - after the booking: a report problem never leaves the job stuck
         logger.error("adhoc: job %s registry/follow-up hit %s", job.id, type(exc).__name__)
         report = [messages.REGISTRY_WORDS["failed"]]
+    report += _plan_status(job, deps, NEEDS_ATTENTION if problems else PLAN_CREATED, problems)
     store.set_status(job.id, store.NEEDS_REVIEW if problems else store.DONE,
                      last_error_code=",".join(problems) or None)
     deps.notifier.notice(messages.done_text(plan, result.purchase_ids, results, problems, "live",
