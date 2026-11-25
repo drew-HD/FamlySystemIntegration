@@ -22,6 +22,8 @@ Store: var/children_registry.sqlite3 (gitignored), code in actions/registry/. Ro
 - Worker (live only, never a stop): a new child's registry row after the confirmed create; an existing child's row (from the live roster) and the ad hoc deal after the booking. Outcome `registry:added|already|conflict|missing|failed`.
 - Reporting: Slack done message (operations child, "book on Famly next time", no-plan flag with child name and deal id, registry result, HubSpot failures marked "Needs checking"). HubSpot (only when there is something to follow up): a note (ids only) on the ad hoc deal and on each operations deal, and the dropdown `famly_followup` (no_famly_plan | registry_conflict | registry_failed) on each operations deal. Drew creates `famly_followup` in HubSpot before going live.
 
+- `famly_plan_status` on the AD HOC deal (branch adhoc-plan-status): after a booking attempt only. Booked cleanly = `plan_created` (note cleared); booking sent but needs a person = `needs_attention` (note = codes). Holds, rejected bookings and dry mode write nothing; a failed write is a Slack line.
+
 ## Drew's decisions (2026-11-25)
 - Exact name (same words any order, or the Famly name wholly inside the HubSpot name, e.g. a middle name) + same DOB: join automatically, no question.
 - Similar name (2+ words match, or same surname: twins) + same DOB: Slack question. One shared first name alone is not similar.
