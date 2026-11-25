@@ -161,7 +161,8 @@ def _fail_job(job: store.Job, deps: Deps) -> None:
     if sent:
         lines = []
         try:
-            if row is not None and row.write_sent:    # the booking was sent: HubSpot shows it needs a person
+            already = any(str(o).startswith("hubspot:status_") for o in (row.outcomes or [])) if row else True
+            if row is not None and row.write_sent and not already:    # the booking was sent, status not yet set: HubSpot shows it needs a person
                 lines = _plan_status(job, deps, NEEDS_ATTENTION, ["worker_error_after_write"])
         except Exception as exc:  # noqa: BLE001
             logger.error("adhoc: job %s plan status hit %s", job.id, type(exc).__name__)

@@ -72,6 +72,36 @@ class PlanStatusTests(Case):
         self.run_live(mock.Mock(side_effect=AssertionError("wrote")), mode="dry")
         self.assertEqual(self.status.calls, [])
 
+    def test_a_duplicate_write_block_sets_needs_attention(self):
+        self.status = StatusWriter()
+        store.enqueue("1", "live")
+        deps = self.deps(plan())
+        deps.writes, deps.deal_writer = FakeWrites(), self.status
+        worker.run_once(deps)
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        store.mark_write_sent(store.latest_for_deal("1").id)          # an earlier attempt already sent it
+        worker.run_once(deps)
+        self.assertEqual(self.status.calls, [("1", "needs_attention", "duplicate_write_blocked")])
+
+    def test_a_worker_error_after_the_booking_sets_needs_attention_once(self):
+        class Boom(FakeWrites):
+            def tag(self, child_id, institution_id):
+                raise RuntimeError("after the booking")
+        job = self.run_live(Boom())
+        self.assertEqual((job.status, self.status.calls), (store.NEEDS_REVIEW, [("1", "needs_attention",
+                                                                                 "worker_error_after_write")]))
+
+    def test_a_worker_error_after_the_status_was_set_does_not_write_it_again(self):
+        writer = StatusWriter()
+        job = store.enqueue("1", "live").job
+        store.set_status(job.id, store.WRITING)
+        store.mark_write_sent(job.id)
+        store.update(job.id, outcomes=["booked:1", "hubspot:status_written:plan_created"])
+        deps = self.deps(plan())
+        deps.deal_writer = writer
+        worker._fail_job(store.get(job.id), deps)
+        self.assertEqual(writer.calls, [])
+
     def test_a_failed_status_write_is_a_slack_line_and_the_job_is_still_done(self):
         job = self.run_live(FakeWrites(), writer=StatusWriter("status_failed"))
         self.assertEqual(job.status, store.DONE)
