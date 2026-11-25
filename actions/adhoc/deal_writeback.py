@@ -1,6 +1,8 @@
 """The ONLY HubSpot writes the ad hoc worker makes: the child's URN and the Famly child id onto the DEAL (Drew,
-2026-11-25: so the deal records which child it made and a Retry or a person can find it). Same rules as onboarding's
-`_write_allocated_urn` and `Syncer`:
+2026-11-25: so the deal records which child it made and a Retry or a person can find it), plus (registry stage 3) a
+NOTE on a deal and the `famly_followup` dropdown on an OPERATIONS deal, so the CS team sees what needs checking
+(`add_note` / `set_followup`: ids and codes only; a failure is a code, never a stop). For the URN and child id, the
+same rules as onboarding's `_write_allocated_urn` and `Syncer`:
 
   * only `child_urn` and `famly_childid`, nothing else (a guard, not a convention);
   * only when the property is EMPTY, or already holds the same value; a DIFFERENT value is never overwritten;
@@ -70,6 +72,31 @@ class DealWriter:
         except (WritebackFailed, HubSpotError, ValueError) as exc:
             logger.error("adhoc: urn write to HubSpot failed (%s)", type(exc).__name__)    # type only
             raise WritebackFailed(URN_WRITE_FAILED) from None
+
+    def add_note(self, deal_id: str, body: str) -> str:
+        """A note on the deal (ids and codes only). Never raises: 'note_added' | 'note_failed'."""
+        create = getattr(self.client, "create_deal_note", None)
+        try:
+            if not callable(create):
+                raise ValueError("no note writer")
+            create(str(deal_id), body)
+        except (HubSpotError, ValueError) as exc:
+            logger.error("adhoc: HubSpot note failed (%s)", type(exc).__name__)
+            return "note_failed"
+        return "note_added"
+
+    def set_followup(self, deal_id: str, value: str) -> str:
+        """The CS follow-up dropdown on an operations deal. Never raises: 'followup_written' | 'followup_failed'
+        (e.g. the property has not been created in HubSpot yet)."""
+        write = getattr(self.client, "write_followup", None)
+        try:
+            if not callable(write):
+                raise ValueError("no follow-up writer")
+            write(str(deal_id), value)
+        except (HubSpotError, ValueError) as exc:
+            logger.error("adhoc: HubSpot follow-up write failed (%s)", type(exc).__name__)
+            return "followup_failed"
+        return "followup_written"
 
     def ensure_child_id(self, deal_id: str, child_id: str) -> str:
         """Put the Famly child id on the deal after the child is confirmed. Never raises: returns a code."""

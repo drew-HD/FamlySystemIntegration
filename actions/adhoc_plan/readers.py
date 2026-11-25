@@ -62,6 +62,14 @@ class Readers:
         child = getattr(self, "_index", None) and self._index.children.get(child_id)
         return (child.full_name or None) if child else None
 
+    def child_details(self, child_id: str) -> dict | None:
+        """The child's Famly name, date of birth and URN from the last Famly pull (memory only), for its children
+        registry row. None if the child was not in that pull."""
+        child = getattr(self, "_index", None) and self._index.children.get(child_id)
+        if not child:
+            return None
+        return {"name": child.full_name or "", "dob": child.birthday or "", "urn": child.external_id or ""}
+
     def deps(self) -> planner.Deps:
         from actions.read_child_plans import runner as plans_runner
 
@@ -79,6 +87,7 @@ class Readers:
         from actions.onboard.urn_alloc import UrnService
         from actions.onboard_dry_run import bill_payers as payer_scan
         from actions.onboard_dry_run.famly_reads import FamlyReads
+        from actions.registry import lookup as registry_lookup
 
         famly = FamlyReads(self.public)                  # read-only wrapped; the roster is read once per plan
         live = adhoc_config.mode() == adhoc_config.MODE_LIVE
@@ -88,7 +97,8 @@ class Readers:
             price_child_for_site=lambda site: self._test_children.get(site),
             urn=lambda deal_id, site: urn_plan.urn_section(UrnService(self.hubspot, famly), deal_id, site, live),
             bill_payers=famly.bill_payers if payer_scan.enabled() else None,
-            allocated_urn=allocated_urn_for_deal, resume_contacts=resume_contacts_for_deal)
+            allocated_urn=allocated_urn_for_deal, resume_contacts=resume_contacts_for_deal,
+            registry=registry_lookup.candidates, registry_deals=registry_lookup.operations_deals)
 
     def deal_and_contacts(self, deal_id: str):
         """The deal and contacts from the SAME read that produced the last plan for this deal (memory only), so the

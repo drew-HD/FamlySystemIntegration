@@ -95,6 +95,9 @@ SENTENCES = {
     "tag_failed": "The Ad Hoc Only tag could not be added.",
     "end_date_failed": "The child's end date could not be removed.",
     "approval_rejected": "The plan was rejected.",
+    "registry_unreadable": "The children registry could not be read, so the job is held: no child is created or "
+                           "matched until the registry can be checked. Press Retry once it is back.",
+    "registry_similar_child": "A child in the children registry has a similar name and the same date of birth.",
     "slack_post_failed": "The approval message could not be posted to Slack.",
 }
 
@@ -106,6 +109,37 @@ def deal_link(deal_id: str) -> str:
 
 def _money(value) -> str:
     return f"£{value}"
+
+
+def _deal_links(ids) -> str:
+    return ", ".join(deal_link(i) for i in ids)
+
+
+def operations_lines(plan: dict, child_name: str | None, booked: bool) -> list[str]:
+    """Stage 3: the child already has an operations (nursery) deal. Carries the child's name and the deal ids
+    (Drew, 2026-11-25: the join summary may name the child)."""
+    ops = plan["match"].get("operationsDealIds") or []
+    if not ops:
+        return []
+    child_id = plan["match"]["childIds"][0]
+    lines = [f"This child has an operations deal (HubSpot {_deal_links(ops)}): the sessions "
+             f"{'were' if booked else 'will be'} booked on the existing child, with no Ad Hoc Only tag and the end "
+             "date kept. Please ask the parents to book on Famly next time."]
+    if "operations_child_no_famly_plan" in plan["flags"]:
+        lines.append(f"⚠️ Needs checking: {child_name or 'name not available'} (Famly Id: {child_id}) is marked as "
+                     f"having an operations deal ({_deal_links(ops)}) but has no plan in Famly.")
+    return lines
+
+
+REGISTRY_WORDS = {
+    "added": "Children registry: updated.",
+    "already": "Children registry: already up to date.",
+    "conflict": "⚠️ Needs checking: in the children registry this deal (or the URN) is linked to a different child, "
+                "so it was not changed.",
+    "failed": "⚠️ Needs checking: the children registry could not be updated.",
+    "missing": "⚠️ Needs checking: this child is not in the children registry and could not be added (run "
+               "registry-backfill).",
+}
 
 
 def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_name: str | None = None) -> str:
@@ -127,6 +161,7 @@ def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_n
         lines.append("Child doesn't exist in Famly, to be created")
         lines += _new_child_lines(plan)
     lines.append("Ad hoc only child" if plan["adHocOnly"] else "Standard child booking ad hoc")
+    lines += operations_lines(plan, child_name, booked=False)
     for number, b in enumerate(plan["bookings"], 1):
         lines.append(f"{number}. {long_date(b['date'])} {b['session']} {_money(b['price'])}")
     total = f"Total {_money(plan['total'])}"
@@ -167,11 +202,14 @@ def _new_child_lines(plan: dict) -> list[str]:
 def match_text(plan: dict, famly_name: str, child_id: str, mode: str) -> str:
     """The child-match question. Carries the Famly child's NAME and the deal id (the one Slack exception)."""
     dry = DRY if mode == "dry" else ""
+    why = ("A child in the children registry has the same date of birth and a similar name (it may be the same "
+           "child, or a twin or sibling)." if plan["match"].get("reason") == "registry_similar" else
+           "A parent's email on this deal matches a child in Famly, but the name or date of birth on the deal is "
+           "different (it may be a sibling).")
     return "\n".join([
         f"*{dry}Ad hoc: is this the correct child?*",
         f"Deal: {deal_link(plan['dealId'])} · Site: {site_name(plan.get('site'))}",
-        "A parent's email on this deal matches a child in Famly, but the name or date of birth on the deal is "
-        "different (it may be a sibling).",
+        why,
         f"Famly child: *{famly_name or 'name not available'}* (id {child_id})",
         "Check the deal in HubSpot. If this is the right child press *That's the child*; if the deal is for a "
         "different child press *Create a new child*."])
@@ -208,8 +246,9 @@ def hold_text(deal_id: str, codes, mode: str, details=None) -> str:
 
 
 def done_text(plan: dict, booked_ids: list, outcomes: dict, problems: list, mode: str,
-              child_id: str | None = None) -> str:
-    """The after-writing notice: counts, money and codes. No names."""
+              child_id: str | None = None, report: list | None = None) -> str:
+    """The after-writing notice: counts, money and codes. `report` holds the registry stage lines (operations child,
+    registry and HubSpot follow-up), which may name the child (Drew, 2026-11-25)."""
     n = len(plan["bookings"])
     head = "✅ Ad hoc done" if not problems else "⚠️ Ad hoc done with problems"
     lines = [f"{head} for deal {deal_link(plan['dealId'])}: {n} session{'s' if n != 1 else ''} booked "
@@ -221,6 +260,7 @@ def done_text(plan: dict, booked_ids: list, outcomes: dict, problems: list, mode
     if "tag" in outcomes:
         lines.append(f"Ad Hoc Only tag: {outcomes['tag'].replace('tag_', '').replace('_', ' ')}. "
                      f"End date: {outcomes['end'].replace('end_date_', '').replace('_', ' ')}.")
+    lines += report or []
     if problems:
         lines += [f"• {SENTENCES.get(c.split(':')[0], c)}" for c in problems]
         lines.append(f"Codes: {', '.join(problems)}")

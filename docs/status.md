@@ -18,6 +18,8 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 
 - Children registry (branch children-registry, stage 1): var/children_registry.sqlite3 (CHILDREN_REGISTRY_PATH), `registry-backfill` (read-only, dry run unless --confirm), `registry-lookup`, `registry-stats`. Fakes only, not run live. Design: docs/registry_design.md.
 
+- Ad hoc + registry (branch adhoc-registry, stages 2-3): registry match before create, operations child booked without tag, registry rows, Slack and HubSpot note/`famly_followup` reports. Fakes only. Needs the HubSpot property `famly_followup` (dropdown) before live.
+
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
 - QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_ALLOWED_INSTITUTIONS.
