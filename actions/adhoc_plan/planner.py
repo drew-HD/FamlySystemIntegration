@@ -52,6 +52,11 @@ class Deps:
     # deal id, child id -> True when an EARLIER job of this deal created this child but never reached its contacts (no
     # contact outcomes recorded): the plan then carries the contacts and bill payer sections and creates them.
     resume_contacts: Callable[[str, str], bool] | None = None
+    # The children registry (actions/registry/lookup.py). `registry`: (deal child name, ISO date of birth) ->
+    # [(exact | similar, child id)]; `registry_deals`: child id -> its operations deal ids. Either raises when the
+    # registry cannot be read (the job is then held). None = no registry check (older callers, tests).
+    registry: Callable[[str, str], list] | None = None
+    registry_deals: Callable[[str], list] | None = None
 
 
 def _tokens(*parts) -> frozenset:
@@ -79,11 +84,33 @@ def agrees(child, tokens: frozenset, dob: date | None) -> bool:
     return all(checks) if checks else True
 
 
+REGISTRY_SIMILAR = "registry_similar_child"
+REGISTRY_UNREADABLE = "registry_unreadable"
+
+
+def registry_hits(deal: dict, index, registry) -> dict[str, list[str]]:
+    """{"exact": [...], "similar": [...]} child ids from the registry by the deal's name + date of birth, keeping only
+    children in the live Famly roster (a registry row can be stale). Raises if the registry cannot be read."""
+    from actions.registry import match as registry_match
+    dob = deal_dob(deal)
+    hits = registry(registry_match.deal_child_name(deal), dob.isoformat() if dob else "")
+    out: dict[str, list[str]] = {"exact": [], "similar": []}
+    for result, child_id in hits:
+        if child_id in index.children and child_id not in out[result]:
+            out[result].append(child_id)
+    return out
+
+
 def match_child(deal: dict, deal_id: str, contacts, index,
-                allocated_urn: str | None = None) -> tuple[str, list[str], list[str]]:
-    """(how, child ids, extra holds/flags). how: deal_reference | famly_childid | urn | allocated_urn | parent_email |
-    name_dob | none. `allocated_urn` is the URN already reserved for this deal: a child an earlier ad hoc job created
-    for it carries that URN and no deal reference."""
+                allocated_urn: str | None = None, registry=None) -> tuple[str, list[str], list[str]]:
+    """(how, child ids, extra holds/flags). how: deal_reference | famly_childid | urn | allocated_urn | registry_exact |
+    parent_email | name_dob | none. `allocated_urn` is the URN already reserved for this deal: a child an earlier ad
+    hoc job created for it carries that URN and no deal reference.
+
+    The children registry (Drew, 2026-11-25), after the deal's own ids: an EXACT name + date of birth match is that
+    child (it wins over the parent-email hold; email is only a backup signal); two or more exact matches are
+    ambiguous; a SIMILAR match is held for the Slack child-match question (after a parent-email match whose name
+    agrees); a registry that cannot be read holds the job."""
     via, ids = index.find(deal, deal_id)
     if ids:
         return via, ids, []
@@ -91,12 +118,23 @@ def match_child(deal: dict, deal_id: str, contacts, index,
         ids = list(dict.fromkeys(index.by_urn.get(str(allocated_urn).casefold(), [])))
         if ids:
             return "allocated_urn", ids, []
+    similar: list[str] = []
+    if registry is not None:
+        try:
+            hits = registry_hits(deal, index, registry)
+        except Exception:  # noqa: BLE001 - unreadable: never create a child that may already exist
+            return "none", [], [f"HOLD:{REGISTRY_UNREADABLE}"]
+        if hits["exact"]:
+            return "registry_exact", hits["exact"], []
+        similar = hits["similar"]
     tokens, dob = deal_child_tokens(deal), deal_dob(deal)
     candidates = adhoc.email_candidates(contacts, index) if contacts else []
     kept = [c for c in candidates if agrees(index.children[c], tokens, dob)]
     if kept:
         flags = [] if (tokens or dob) else ["matched_by_email_only"]
         return "parent_email", kept, flags
+    if similar:
+        return "none", [], [f"HOLD:{REGISTRY_SIMILAR}"] + [f"CANDIDATE:{c}" for c in similar]
     if candidates:
         return "none", [], ["HOLD:parent_email_matches_a_different_child"]
     if tokens and dob:
@@ -205,17 +243,21 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
         how, ids, extra = "slack_confirmed", [confirmed_child_id], []
     else:
         allocated = deps.allocated_urn(deal_id) if deps.allocated_urn else None
-        how, ids, extra = match_child(deal, deal_id, contacts, index, allocated)
+        how, ids, extra = match_child(deal, deal_id, contacts, index, allocated, deps.registry)
         if force_new and not ids:
-            extra = [e for e in extra if e != "HOLD:parent_email_matches_a_different_child"]
+            extra = [e for e in extra if e not in ("HOLD:parent_email_matches_a_different_child",
+                                                   f"HOLD:{REGISTRY_SIMILAR}") and not e.startswith("CANDIDATE:")]
             flags.append("new_child_confirmed_in_slack")
     plan["match"] = {"via": how, "childIds": ids}
     if how == "allocated_urn":
         plan["match"]["urn"] = allocated                 # a resumed child: the worker puts this URN on the deal
     if "HOLD:parent_email_matches_a_different_child" in extra:
         plan["match"]["candidateIds"] = adhoc.email_candidates(contacts, index)
+    if f"HOLD:{REGISTRY_SIMILAR}" in extra:
+        plan["match"]["candidateIds"] = [e.removeprefix("CANDIDATE:") for e in extra if e.startswith("CANDIDATE:")]
+        plan["match"]["reason"] = "registry_similar"
     holds += [e.removeprefix("HOLD:") for e in extra if e.startswith("HOLD:")]
-    flags += [e for e in extra if not e.startswith("HOLD:")]
+    flags += [e for e in extra if not e.startswith(("HOLD:", "CANDIDATE:"))]
     if len(ids) > 1:
         holds.append("child_ambiguous")
         return plan
@@ -225,9 +267,25 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     if child is not None:
         birthday = date.fromisoformat(child.birthday) if child.birthday else None
         try:
-            plan["adHocOnly"] = not deps.has_plan(child.id)
+            has_plan = deps.has_plan(child.id)
+            plan["adHocOnly"] = not has_plan
         except Exception:  # noqa: BLE001
+            has_plan = None
             holds.append("plans_not_readable")
+        if deps.registry_deals is not None:
+            # Stage 3: a child with an operations deal is a nursery child: never tagged Ad Hoc Only, end date kept,
+            # even with no Famly plan yet (that is flagged for a person).
+            try:
+                operations = list(deps.registry_deals(child.id))
+            except Exception:  # noqa: BLE001
+                operations = []
+                holds.append(REGISTRY_UNREADABLE)
+            if operations:
+                plan["match"]["operationsDealIds"] = operations
+                plan["adHocOnly"] = False
+                flags.append("joins_operations_child")
+                if has_plan is False:
+                    flags.append("operations_child_no_famly_plan")
     else:
         plan["adHocOnly"] = True
         birthday = deal_dob(deal)
@@ -300,6 +358,8 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
             plan["steps"].append("remove_end_date_if_set")
     if plan["bookings"]:
         plan["steps"].append(f"book_{len(plan['bookings'])}_sessions")
+    if deps.registry is not None:
+        plan["steps"].append("registry_add_child" if child is None else "registry_add_adhoc_deal")
     return plan
 
 

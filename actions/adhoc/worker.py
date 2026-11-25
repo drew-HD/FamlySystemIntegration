@@ -62,6 +62,8 @@ class Deps:
     famly_factory: Callable[[], Any] | None = None       # a FRESH FamlyReads per call (it memoises its roster)
     deal_context: Callable[[str], tuple] | None = None   # deal id -> (deal properties, contacts), in memory only
     deal_writer: Any = None       # actions.adhoc.deal_writeback.DealWriter: the URN and child id onto the HubSpot deal
+    registry: Any = None          # actions.registry.lookup (live mode): registry rows after a confirmed write
+    child_details: Callable[[str], dict | None] = lambda child_id: None   # Famly name/DOB/URN, memory only
     sleep: Callable[[float], None] = time.sleep
 
     def __post_init__(self):
@@ -86,9 +88,12 @@ def default_deps() -> Deps:
         context = readers.deal_and_contacts
         from core.hubspot import HubSpotDealWriter
         deal_writer = deal_writeback.DealWriter(HubSpotDealWriter())  # the read-write client (it owns write_deal_properties)
+        from actions.registry import lookup as registry
+    else:
+        registry = None
     return Deps(plan_deal=readers.plan_deal, child_name=readers.child_name, notifier=SlackNotifier(),
                 writes=famly_writer, public=public, famly_factory=factory, deal_context=context,
-                deal_writer=deal_writer)
+                deal_writer=deal_writer, registry=registry, child_details=readers.child_details)
 
 
 def recover() -> int:
@@ -228,7 +233,8 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> None:
 
     if holds:
         candidates = plan["match"].get("candidateIds") or []
-        if holds == [MATCH_HOLD] and len(candidates) == 1 and job.match_decision is None:
+        if (holds in ([MATCH_HOLD], [planner.REGISTRY_SIMILAR]) and len(candidates) == 1
+                and job.match_decision is None):
             _ask_match(job, deps, plan, digest, candidates[0], run_mode)
         else:
             _hold(job, deps, holds, run_mode, plan=plan, flags=flags, digest=digest)
@@ -301,7 +307,7 @@ def _write_phase(job, deps, plan, digest: str) -> None:
     if not result.verified:
         problems.append("booking_mismatch:" + "+".join(result.mismatches))
     results: dict[str, str] = {}
-    if plan["adHocOnly"]:
+    if plan["adHocOnly"]:                                # never for a child with an operations deal (stage 3)
         results["tag"] = deps.writes.tag(child_id, plan["siteId"])
         outcomes.append(results["tag"])
         if new:
@@ -314,10 +320,72 @@ def _write_phase(job, deps, plan, digest: str) -> None:
             problems.append(results["tag"])
         if results["end"] not in (writes.END_REMOVED, writes.END_NONE):
             problems.append(results["end"])
+    try:
+        report = _registry_and_followup(job, deps, plan, child_id, new, outcomes)
+    except Exception as exc:  # noqa: BLE001 - after the booking: a report problem never leaves the job stuck
+        logger.error("adhoc: job %s registry/follow-up hit %s", job.id, type(exc).__name__)
+        report = [messages.REGISTRY_WORDS["failed"]]
     store.set_status(job.id, store.NEEDS_REVIEW if problems else store.DONE,
                      last_error_code=",".join(problems) or None)
     deps.notifier.notice(messages.done_text(plan, result.purchase_ids, results, problems, "live",
-                                            child_id=child_id if new else None))
+                                            child_id=child_id if new else None, report=report))
+
+
+FOLLOWUP_FOR = {"failed": "registry_failed", "missing": "registry_failed", "conflict": "registry_conflict"}
+
+
+def _registry_and_followup(job, deps, plan, child_id: str, new: bool, outcomes: list) -> list[str]:
+    """After the booking (registry stages 2 and 3): record the ad hoc deal on the child in the registry, then tell
+    people what needs checking, in Slack (the returned lines) and in HubSpot (a note on the ad hoc deal and on each
+    operations deal, and the `famly_followup` dropdown on each operations deal). Nothing here stops the job or
+    makes it `needs_review`: every failure is a line in Slack (Drew, 2026-11-25)."""
+    if deps.registry is None:
+        return []
+    if new:                                     # recorded when the child was confirmed (_create_new_child)
+        code = next((o.split(":", 1)[1] for o in outcomes if str(o).startswith("registry:")), "failed")
+    else:
+        code = deps.registry.record_existing_child(child_id, deps.child_details(child_id), plan.get("site"),
+                                                   job.deal_id)
+        outcomes.append(f"registry:{code}")
+    ops = plan["match"].get("operationsDealIds") or []
+    no_plan = "operations_child_no_famly_plan" in plan["flags"]
+    name = deps.child_name(child_id) if ops else None          # memory only, for the Slack summary
+    lines = messages.operations_lines(plan, name, booked=True) + [messages.REGISTRY_WORDS.get(code, code)]
+
+    followup = FOLLOWUP_FOR.get(code) or ("no_famly_plan" if no_plan else None)
+    if (ops or followup) and deps.deal_writer is not None:
+        body = _note_body(job.deal_id, child_id, plan, ops, no_plan, code)
+        hubspot = [("ad hoc deal", job.deal_id, deps.deal_writer.add_note(job.deal_id, body))]
+        for deal_id in ops:
+            hubspot.append(("operations deal", deal_id, deps.deal_writer.add_note(deal_id, body)))
+            if followup:
+                hubspot.append(("famly_followup on", deal_id, deps.deal_writer.set_followup(deal_id, followup)))
+        outcomes += [f"hubspot:{result}:{deal_id}" for _what, deal_id, result in hubspot]
+        failed = [f"{what} {messages.deal_link(deal_id)}" for what, deal_id, result in hubspot
+                  if result.endswith("_failed")]
+        if failed:
+            lines.append("⚠️ Needs checking: HubSpot could not be updated (" + "; ".join(failed) + ").")
+        elif followup and ops:
+            lines.append(f"HubSpot: note added and famly_followup set to {followup}.")
+        else:
+            lines.append("HubSpot: note added.")
+    store.update(job.id, outcomes=outcomes)
+    return lines
+
+
+def _note_body(deal_id: str, child_id: str, plan: dict, ops: list, no_plan: bool, code: str) -> str:
+    """The HubSpot note: ids and codes only (never a name or contact detail)."""
+    n = len(plan["bookings"])
+    parts = [f"Famly ad hoc worker: ad hoc deal {deal_id} booked {n} session{'s' if n != 1 else ''} on Famly child "
+             f"{child_id}."]
+    if ops:
+        parts.append(f"The child has an operations deal ({', '.join(ops)}): no Ad Hoc Only tag, end date kept. "
+                     "Please ask the parents to book on Famly next time.")
+    if no_plan:
+        parts.append("Needs checking: the child has an operations deal but no plan in Famly.")
+    if code in FOLLOWUP_FOR:
+        parts.append(f"Needs checking: children registry {code}.")
+    return " ".join(parts)
 
 
 def _contacts_missing(job, child_id: str) -> bool:
@@ -432,6 +500,13 @@ def _create_new_child(job, deps, plan, outcomes: list, problems: list) -> str | 
         _end(job, deps, stop.status, stop.code)
         return None
     _record_child_id(job, deps, child_id, outcomes, problems)
+    if deps.registry is not None:                 # the child is confirmed: its registry row (a flag, never a stop)
+        from actions.registry import match as registry_match
+        dob = planner.deal_dob(deal)
+        code = deps.registry.record_new_child(child_id, registry_match.deal_child_name(deal),
+                                              dob.isoformat() if dob else "", plan.get("site"), urn, job.deal_id)
+        outcomes.append(f"registry:{code}")
+        store.update(job.id, outcomes=outcomes)
     _contacts_and_payer(job, deps, plan, contacts, child_id, famly, outcomes, problems, fresh_child=True)
     return child_id
 

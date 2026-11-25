@@ -16,6 +16,12 @@ Store: var/children_registry.sqlite3 (gitignored), code in actions/registry/. Ro
 - The registry holds ONLY children that are in Famly, with every deal that points to them (any stage). A deal with no Famly child is never stored; `--deals-out reports/x.txt` lists those deal ids (Left Nursery, Ad Hoc Completed, Closed Lost left out) to run through the pipeline later.
 - Commands: `registry-backfill [--confirm] [--out reports/x.csv] [--deals-out reports/x.txt]`, `registry-lookup (--child-id|--urn|--deal-id|--email|--name N --dob D)` (names, ids, URNs and deal ids to the terminal; never DOB or emails), `registry-stats`.
 
+## Stages 2 and 3, ad hoc worker (branch adhoc-registry; fakes only, not run live)
+- Planner (`actions/adhoc_plan/planner.py match_child`): after the deal's own ids and the allocated URN, the registry by name + DOB (live roster drops stale ids). One EXACT = that child (wins over the parent-email hold); 2+ EXACT = `child_ambiguous`; SIMILAR = hold `registry_similar_child` -> the Slack child-match question; registry unreadable = hold `registry_unreadable` (Slack hold notice).
+- A child with an operations deal in the registry: `adHocOnly` False (no Ad Hoc Only tag, end date kept); flags `joins_operations_child`, and `operations_child_no_famly_plan` when Famly has no plan.
+- Worker (live only, never a stop): a new child's registry row after the confirmed create; an existing child's row (from the live roster) and the ad hoc deal after the booking. Outcome `registry:added|already|conflict|missing|failed`.
+- Reporting: Slack done message (operations child, "book on Famly next time", no-plan flag with child name and deal id, registry result, HubSpot failures marked "Needs checking"). HubSpot (only when there is something to follow up): a note (ids only) on the ad hoc deal and on each operations deal, and the dropdown `famly_followup` (no_famly_plan | registry_conflict | registry_failed) on each operations deal. Drew creates `famly_followup` in HubSpot before going live.
+
 ## Drew's decisions (2026-11-25)
 - Exact name (same words any order, or the Famly name wholly inside the HubSpot name, e.g. a middle name) + same DOB: join automatically, no question.
 - Similar name (2+ words match, or same surname: twins) + same DOB: Slack question. One shared first name alone is not similar.

@@ -387,6 +387,13 @@ PLAN_STATUS_VALUES = (PLAN_STATUS_CREATED, PLAN_STATUS_NEEDS_ATTENTION)
 # empty. The `+` is for a "+N" count of further sub-codes (`a,b,c,+2`).
 PLAN_NOTE_PATTERN = re.compile(r"^[a-z0-9_:.,+-]{0,100}$")
 
+# A follow-up for the CS team on an OPERATIONS deal (Drew, 2026-11-25: active segments and a dashboard). A dropdown
+# Drew creates in HubSpot; only `write_followup` writes it, with exactly these values. Notes on a deal are created
+# by `create_deal_note` (ids and codes only, never a name or contact detail).
+FOLLOWUP_PROPERTY = "famly_followup"
+FOLLOWUP_VALUES = ("no_famly_plan", "registry_conflict", "registry_failed")
+NOTE_TO_DEAL_ASSOCIATION = 214          # HubSpot-defined association type: note -> deal
+
 
 class HubSpotDealWriter(HubSpotClient):
     """A HubSpotClient that can also write the sync properties (and a defaulted
@@ -443,6 +450,34 @@ class HubSpotDealWriter(HubSpotClient):
             raise ValueError("famly_plan_status must be plan_created or needs_attention")
         self._call("PATCH", f"/crm/v3/objects/deals/{deal_id}",
                    json_body={"properties": {PLAN_STATUS_PROPERTY: value}}, attempts=1)
+
+    def write_followup(self, deal_id: str, value: str) -> None:
+        """PATCH `famly_followup` to one of FOLLOWUP_VALUES: ONE request, never retried.
+
+        Raises:
+            ValueError: any other value (nothing sent).
+            HubSpotError: the request failed (e.g. the property does not exist yet).
+        """
+        if value not in FOLLOWUP_VALUES:
+            raise ValueError("famly_followup must be one of " + ", ".join(FOLLOWUP_VALUES))
+        self._call("PATCH", f"/crm/v3/objects/deals/{deal_id}",
+                   json_body={"properties": {FOLLOWUP_PROPERTY: value}}, attempts=1)
+
+    def create_deal_note(self, deal_id: str, body: str) -> None:
+        """Create ONE note on the deal: ONE request, never retried (a retry could add a second note).
+
+        Raises:
+            ValueError: an empty or over-long body (nothing sent).
+            HubSpotError: the request failed.
+        """
+        import time as _time
+        if not isinstance(body, str) or not body.strip() or len(body) > 5000:
+            raise ValueError("note body must be non-empty text up to 5000 characters")
+        self._call("POST", "/crm/v3/objects/notes", json_body={
+            "properties": {"hs_note_body": body, "hs_timestamp": str(int(_time.time() * 1000))},
+            "associations": [{"to": {"id": str(deal_id)},
+                              "types": [{"associationCategory": "HUBSPOT_DEFINED",
+                                         "associationTypeId": NOTE_TO_DEAL_ASSOCIATION}]}]}, attempts=1)
 
     def write_plan_note(self, deal_id: str, note: str) -> None:
         """PATCH `famly_plan_note` to a CODE (PLAN_NOTE_PATTERN) or to "" (clears it): ONE request, never retried.
