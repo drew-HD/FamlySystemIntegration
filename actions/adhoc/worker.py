@@ -84,8 +84,8 @@ def default_deps() -> Deps:
         public = urn_runner._public_client()
         factory = lambda: FamlyReads(public)  # noqa: E731
         context = readers.deal_and_contacts
-        from core.hubspot import HubSpotClient
-        deal_writer = deal_writeback.DealWriter(HubSpotClient())      # read-write client: live mode only
+        from core.hubspot import HubSpotDealWriter
+        deal_writer = deal_writeback.DealWriter(HubSpotDealWriter())  # the read-write client (it owns write_deal_properties)
     return Deps(plan_deal=readers.plan_deal, child_name=readers.child_name, notifier=SlackNotifier(),
                 writes=famly_writer, public=public, famly_factory=factory, deal_context=context,
                 deal_writer=deal_writer)

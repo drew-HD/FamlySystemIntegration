@@ -35,6 +35,9 @@ class DealWriter:
     """`client` is a core.hubspot.HubSpotClient (read and write)."""
 
     def __init__(self, client):
+        # Fail at start-up, not mid-job: the plain HubSpotClient has no write_deal_properties (HubSpotDealWriter does).
+        if not (callable(getattr(client, "get_deal", None)) and callable(getattr(client, "write_deal_properties", None))):
+            raise TypeError("DealWriter needs a client with get_deal and write_deal_properties (HubSpotDealWriter)")
         self.client = client
 
     def _read(self, deal_id: str, prop: str) -> str:
