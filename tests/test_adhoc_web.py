@@ -81,7 +81,7 @@ class BackfillTests(Base):
         super().setUp()
         self.hs = FakeHubSpot([
             deal("10", "1", "2026-11-25", "2026-12-01"),      # all future: in
-            deal("11", "1", "2026-11-01", "2026-12-01"),      # mixed
+            deal("11", "1", "2026-11-01", "2026-12-01"),      # mixed: in (one date today or later)
             deal("12", "1", "2026-11-01"),                    # past
             deal("13", "1"),                                  # no dates
             deal("14", "2", "2026-12-01"),                    # Closed Lost
@@ -95,8 +95,8 @@ class BackfillTests(Base):
 
     def test_filter_and_enqueue(self):
         r = cli_enqueue.backfill(self.hs, "dry", today=TODAY)
-        self.assertEqual(r["dealIds"], ["10", "16"])
-        self.assertEqual(r["byStage"], {"Approved": 1, "Booked": 1})
+        self.assertEqual(r["dealIds"], ["10", "11", "16"])
+        self.assertEqual(r["byStage"], {"Approved": 2, "Booked": 1})
         self.assertEqual(store.latest_for_deal("10").source, "cli")
         self.assertIsNotNone(store.active_for_deal("16"))
 
@@ -108,7 +108,7 @@ class BackfillTests(Base):
 
     def test_list_only_enqueues_nothing(self):
         r = cli_enqueue.backfill(self.hs, "dry", today=TODAY, list_only=True)
-        self.assertEqual(r["dealIds"], ["10", "16"])
+        self.assertEqual(r["dealIds"], ["10", "11", "16"])
         self.assertIsNone(store.latest_for_deal("10"))
         self.assertNotIn("jobs", r)
 

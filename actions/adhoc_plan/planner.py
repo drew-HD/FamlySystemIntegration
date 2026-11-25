@@ -103,23 +103,20 @@ def deal_sessions(deal: dict) -> list[tuple[date, str]]:
     return sorted(set(out))
 
 
-def date_details(deal: dict, today: date) -> dict[str, list[str]]:
+def date_details(deal: dict, since: date | None = None) -> dict[str, list[str]]:
     """Which dates each session-data hold is about, as ISO dates (no names, no personal data)."""
-    seen, dups, past, weekend = set(), set(), set(), set()
+    seen, dups, weekend = set(), set(), set()
     for prop in adhoc.DATE_PROPERTIES:
         day = adhoc.parse_date(deal.get(prop))
-        if day is None:
+        if day is None or (since and day < since):
             continue
         if day in seen:
             dups.add(day)
         seen.add(day)
-        if day < today:
-            past.add(day)
         if day.weekday() >= 5:
             weekend.add(day)
     return {code: sorted(d.isoformat() for d in days)
-            for code, days in (("session_date_duplicate", dups), ("session_date_past", past),
-                               ("session_date_weekend", weekend)) if days}
+            for code, days in (("session_date_duplicate", dups), ("session_date_weekend", weekend)) if days}
 
 
 def own_conflicts(result: dict, booked: set[tuple[str, str]]) -> list[dict]:
@@ -158,13 +155,24 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
         holds.append("site_unmapped")
         return plan
 
-    # Past dates are ALWAYS a hold here, whatever the stage: the audit exempts Started / Completed deals (their
-    # sessions have happened), but the pipeline must never book a session in the past.
-    codes, _dates = adhoc.session_codes(deal, None, today)
-    holds += [c for c in codes if c not in UNUSED_CODES]
-    details = date_details(deal, today)
-    plan["details"] = {code: days for code, days in details.items() if code in holds}
+    # The pipeline never books a session in the past (whatever the stage). Today or later is future. Past dates
+    # are skipped when at least one date is today or later; a deal with no such date is held.
+    codes, dates = adhoc.session_codes(deal, None, today)
+    skip_codes = {"session_date_past", "session_date_weekend", "session_date_duplicate"}
+    holds += [c for c in codes if c not in UNUSED_CODES and c not in skip_codes]
     sessions = deal_sessions(deal)
+    past = sorted({d for d in dates if d < today})
+    mixed = bool(past) and any(d >= today for d in dates)
+    # weekend / duplicate apply only to dates that are actually booked (skipped past dates are not judged)
+    details = date_details(deal, today if mixed else None)
+    holds += [c for c in ("session_date_duplicate", "session_date_weekend") if c in details]
+    plan["details"] = {code: days for code, days in details.items() if code in holds}
+    if mixed:
+        plan["skippedPast"] = [d.isoformat() for d in past]
+        flags.append("past_dates_skipped")
+        sessions = [(d, t) for d, t in sessions if d >= today]
+    elif past:
+        holds.append("no_future_sessions")
     # adhoc_discount is stored as a FRACTION of the ad hoc total (0.05 = 5%, 0.325 = 32.5%; checked against the
     # live deals). Famly's discountAmount is a FLAT amount, so it is computed below from the sessions total.
     try:
@@ -272,7 +280,8 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
 def holds_block_pricing(holds: list[str]) -> bool:
     """Session-data problems that make pricing meaningless (the rest are reported alongside the prices)."""
     return any(h in holds for h in ("no_sessions", "session_date_invalid", "session_slot_missing",
-                                    "session_date_missing", "session_slot_unknown", "site_unmapped"))
+                                    "session_date_missing", "session_slot_unknown", "site_unmapped",
+                                    "no_future_sessions"))
 
 
 def describe(plan: dict) -> list[str]:

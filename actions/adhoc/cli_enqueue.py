@@ -14,7 +14,7 @@ def add_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--deal-id", action="append", metavar="ID", help="A deal id, digits only (repeatable)")
     parser.add_argument("--file", metavar="PATH", help="A file of deal ids (digits only, one per line)")
     parser.add_argument("--future", action="store_true",
-                        help="Backfill: queue Ad Hoc deals whose dates are all today or later (read-only HubSpot; "
+                        help="Backfill: queue Ad Hoc deals with at least one date today or later (read-only HubSpot; "
                              "skips Closed Lost, Ad Hoc Completed and deals with an active or done job)")
     parser.add_argument("--stage", action="append", metavar="NAME", help="--future: only these stage labels")
     parser.add_argument("--limit", type=int, metavar="N", help="--future: queue at most N deals")
@@ -22,7 +22,7 @@ def add_args(parser: argparse.ArgumentParser) -> None:
 
 
 def future_deals(hubspot, today=None, stage_names=None) -> list[tuple[str, str]]:
-    """(deal id, stage label) for Ad Hoc deals with at least one date and every date >= today."""
+    """(deal id, stage label) for Ad Hoc deals with at least one date >= today."""
     from actions.adhoc_audit import runner as audit_runner
     from actions.onboard_dry_run import derive
     today = today or date.today()
@@ -34,7 +34,7 @@ def future_deals(hubspot, today=None, stage_names=None) -> list[tuple[str, str]]
             continue
         dates = [audit_runner.parse_date(deal.get(p)) for p in audit_runner.DATE_PROPERTIES]
         dates = [d for d in dates if d]
-        if dates and min(dates) >= today:
+        if dates and max(dates) >= today:
             out.append((str(deal.get("id") or deal.get("hs_object_id")), label))
     return sorted(out)
 

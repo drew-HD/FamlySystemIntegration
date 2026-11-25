@@ -528,3 +528,12 @@ class ExceptionAfterWriteTests(LiveWriteTests):
         with mock.patch.object(worker, "_process", side_effect=RuntimeError(self.SECRET)), \
                 mock.patch.object(store, "set_status", side_effect=OSError(self.SECRET)):
             worker.run_once(deps)                                    # must not raise
+
+
+class SkippedPastMessageTests(unittest.TestCase):
+    def test_gate_text_lists_the_skipped_past_dates(self):
+        from actions.adhoc import messages
+        p = plan()
+        self.assertNotIn("Past dates not booked", messages.gate_text(p, "a" * 16, "dry"))
+        p["skippedPast"] = ["2026-11-02", "2026-11-09"]
+        self.assertIn("Past dates not booked: 02 Nov 2026, 09 Nov 2026", messages.gate_text(p, "a" * 16, "dry"))
