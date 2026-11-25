@@ -61,10 +61,11 @@ def backfill(hubspot, run_mode, *, today=None, stage_names=None, limit=None, lis
 
 def handle(args: argparse.Namespace):
     run_mode = config.mode()
-    if run_mode == config.MODE_OFF and not (args.future and args.list_only):
+    future = getattr(args, "future", False)
+    if run_mode == config.MODE_OFF and not (future and getattr(args, "list_only", False)):
         print("ADHOC_MODE is off; nothing was queued", file=sys.stderr)
         raise SystemExit(3)
-    if args.future:
+    if future:
         if args.deal_id or args.file:
             print("--future does not combine with --deal-id or --file", file=sys.stderr)
             raise SystemExit(3)
