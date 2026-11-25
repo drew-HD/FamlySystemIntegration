@@ -9,6 +9,12 @@ Store: var/children_registry.sqlite3 (gitignored), code in actions/registry/. Ro
 4. Operations deal joins an ad hoc child: see decisions below.
 5. Live tests on test children.
 
+## Stage 1 (built, fakes only, not run live)
+- `actions/registry/store.py`: tables children (Famly id, name, name_key, dob, site_code, source), child_urns, child_deals (kind operations|adhoc), child_emails. A URN or deal on another child is refused (`conflict`), never overwritten.
+- `match.py`: compare() -> exact | similar | none (rules in the module docstring).
+- `backfill.py`: Famly roster (all sites, past and future) + Operations and Ad Hoc deals (famly_childid, child_urn) + done onboard/ad hoc jobs + URN allocations (local stores opened read-only). A deal is linked only when all sources agree on one child.
+- Commands: `registry-backfill [--confirm] [--out reports/x.csv]`, `registry-lookup (--child-id|--urn|--deal-id|--email|--name N --dob D)` (names and DOB to the terminal only), `registry-stats`.
+
 ## Drew's decisions (2026-11-25)
 - Exact name (same tokens, any order) + same DOB: join automatically, no question.
 - Similar name + same DOB: Slack question. Twins (same DOB, different first names) are checked too, so they get the question.

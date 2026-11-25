@@ -2,7 +2,7 @@
 
 | Task | Branch | Status |
 |---|---|---|
-| Children registry (var/, gitignored) + rule edits; workers check it before creating; same-child Slack question; operations joins ad hoc child; ad hoc books for operations child | children-registry | Rule edits committed (9304334). Planner design done (5 stages; stage 1 = actions/registry store, backfill, lookup). Decisions in docs/registry_design.md; All questions answered; stage 1 next. |
+| Children registry (var/, gitignored) + rule edits; workers check it before creating; same-child Slack question; operations joins ad hoc child; ad hoc books for operations child | children-registry | Rule edits committed (9304334). Planner design done (5 stages; stage 1 = actions/registry store, backfill, lookup). Decisions in docs/registry_design.md; Stage 1 (store, backfill, lookup, stats) built, fakes only; in review. Then: Drew approves a prod backfill dry run. |
 | Install the `famly-adhoc-worker` systemd unit | none | Drew: copy `deploy/famly-adhoc-worker.service.example`, confirm paths with `systemctl cat famly-onboard-worker`, enable and start it; restart it after any `.env` change (ADHOC_MODE is read at start). Until then approvals only run when `adhoc-worker --once` is run by hand. |
 | Ad hoc worker as a service (robust loop, SIGTERM, unit template, docs; needs_review after a sent booking) | adhoc-worker-service | Merged and deployed (main d1b5739). Reviewed twice, approved. |
 | Ad hoc live test on the HDCW test child (deal 68715656456) | none | Passed: booked 4 sessions, tag present, end date none. The 4 test sessions were removed by hand in Famly by Drew. |
