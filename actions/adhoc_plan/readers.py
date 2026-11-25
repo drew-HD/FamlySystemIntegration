@@ -11,7 +11,7 @@ from actions.adhoc_probe import runner as reads
 from actions.onboard_audit import runner as audit
 from actions.onboard_dry_run import derive, links
 
-from . import planner
+from . import planner, urn_plan
 
 NOT_AD_HOC = "not_ad_hoc_pipeline"
 DEAL_NOT_FOUND = "deal_not_found"
@@ -57,10 +57,28 @@ class Readers:
                                                     "date": day.isoformat()})
             return (((body.get("data") or {}).get("finance") or {}).get("purchases") or {}).get("previewUpdate")
 
+        from actions.adhoc import config as adhoc_config
+        from actions.onboard.urn_alloc import UrnService
+        from actions.onboard_dry_run import bill_payers as payer_scan
+        from actions.onboard_dry_run.famly_reads import FamlyReads
+
+        famly = FamlyReads(self.public)                  # read-only wrapped; the roster is read once per plan
+        live = adhoc_config.mode() == adhoc_config.MODE_LIVE
         return planner.Deps(
             has_plan=lambda cid: bool(plans_runner.run(cid, client=self.rest).plans),
             read_sessions=read_sessions, preview=preview,
-            price_child_for_site=lambda site: self._test_children.get(site))
+            price_child_for_site=lambda site: self._test_children.get(site),
+            urn=lambda deal_id, site: urn_plan.urn_section(UrnService(self.hubspot, famly), deal_id, site, live),
+            bill_payers=famly.bill_payers if payer_scan.enabled() else None)
+
+    def deal_and_contacts(self, deal_id: str):
+        """The deal's properties and contacts, read fresh, for the write phase (in memory only)."""
+        deals = adhoc.deals_by_id(self.hubspot, [str(deal_id)])
+        if not deals:
+            return None, None
+        if self._labels is None:
+            self._labels = links.load_labels(self.hubspot)
+        return deals[0], links.deal_contacts(self.hubspot, self._labels, str(deal_id))
 
     def plan_deal(self, deal_id: str, index: audit.Index | None = None, confirmed_child_id: str | None = None,
                   force_new: bool = False) -> dict:

@@ -7,6 +7,7 @@
 | Ad hoc live test on the HDCW test child (deal 68715656456) | none | Passed: booked 4 sessions, tag present, end date none. The 4 test sessions were removed by hand in Famly by Drew. |
 | Ad hoc worker 3b: new child, contacts and bill payer (reuse onboarding building blocks) | not started | Next. Until built, a plan that needs a new child is held `new_child_not_built` in live mode. |
 | Ad hoc intake webhook (Approved stage -> deal id) | not started | After 3b. Drew creates the HubSpot workflow. |
+| Ad hoc worker 3b: create a NEW child, contacts, bill payer and URN, then book and tag | adhoc-new-child | Built, fakes only, awaiting review; live test on a test deal not run. |
 | Ad hoc worker 3a: live writes for an existing child (book, tag, end date) | adhoc-writes | Merged and deployed (main 4f43196); exercised live on a test child. |
 | Ad hoc worker 2: Slack gate (plan approval, child-match question, hold notices, conflict dates) | adhoc-slack-gate and later | Merged, deployed, exercised. |
 | Ad hoc worker 1: jobs table and dry-mode loop | adhoc-worker-store | Merged, deployed. |

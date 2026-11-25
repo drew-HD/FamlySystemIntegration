@@ -1,7 +1,7 @@
 """The ad hoc worker, steps 2 and 3a: the Slack gate, and (live mode) the writes for an EXISTING child. In dry mode it
 is READ-ONLY: it never writes to Famly or HubSpot. Live mode books, tags and removes the end date only after a Slack
-Approve, and only when the re-plan hash equals the approved one; a plan that needs a NEW child is held
-(`new_child_not_built`) until step 3b.
+Approve, and only when the re-plan hash equals the approved one. A plan that needs a NEW child (step 3b) creates
+the child, its contacts and the bill payer first (actions/adhoc/new_child.py), then books and tags.
 
 For each queued deal it runs the planner (actions/adhoc_plan) and then:
 
@@ -31,7 +31,7 @@ from typing import Any, Callable
 
 from actions.adhoc_plan import planner
 
-from . import config, messages, store, writes
+from . import config, messages, new_child, store, writes
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,6 @@ POLL_SECONDS = 10.0
 STAGE_NOT_ELIGIBLE = "stage_not_eligible"
 MATCH_HOLD = "parent_email_matches_a_different_child"
 PLAN_UNSTABLE = "plan_unstable"
-NEW_CHILD_NOT_BUILT = "new_child_not_built"          # until step 3b, live mode cannot create a child
 
 
 class _Silent:
@@ -58,6 +57,11 @@ class Deps:
     child_name: Callable[[str], str | None] = lambda child_id: None     # Famly name, memory only, for the match question
     notifier: Any = None
     writes: Any = None            # actions.adhoc.writes.FamlyWriter, live mode only
+    # Step 3b (a NEW child), live mode only:
+    public: Any = None            # the public-API GraphQL client (child and contact creates, bill payer stage)
+    famly_factory: Callable[[], Any] | None = None       # a FRESH FamlyReads per call (it memoises its roster)
+    deal_context: Callable[[str], tuple] | None = None   # deal id -> (deal properties, contacts), in memory only
+    sleep: Callable[[float], None] = time.sleep
 
     def __post_init__(self):
         if self.notifier is None:
@@ -69,13 +73,18 @@ def default_deps() -> Deps:
 
     from .notifier import SlackNotifier
     readers = Readers()
-    famly_writer = None
+    famly_writer, public, factory, context = None, None, None, None
     if config.mode() == config.MODE_LIVE:                  # the write clients exist only in live mode
+        from actions.onboard_dry_run.famly_reads import FamlyReads
+        from actions.urn_lookup import runner as urn_runner
         from core.client import GraphQLClient
         from core.rest_client import RestClient
         famly_writer = writes.FamlyWriter(GraphQLClient(), RestClient())
+        public = urn_runner._public_client()
+        factory = lambda: FamlyReads(public)  # noqa: E731
+        context = readers.deal_and_contacts
     return Deps(plan_deal=readers.plan_deal, child_name=readers.child_name, notifier=SlackNotifier(),
-                writes=famly_writer)
+                writes=famly_writer, public=public, famly_factory=factory, deal_context=context)
 
 
 def recover() -> int:
@@ -127,7 +136,8 @@ def _fail_job(job: store.Job, deps: Deps) -> None:
     Famly; Retry must not look safe), else `failed`. Nothing here may raise out of the loop."""
     sent = False
     try:
-        sent = bool(store.get(job.id).write_sent)
+        row = store.get(job.id)
+        sent = bool(row.write_sent or row.child_create_sent)       # a sent create also needs a person to look
     except Exception as exc:  # noqa: BLE001
         logger.error("adhoc: job %s re-read hit %s", job.id, type(exc).__name__)
         sent = True                    # cannot tell: treat as possibly booked, the safe side
@@ -205,9 +215,6 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> None:
     holds = list(plan["holds"])
     if job.source == "webhook" and planner.GO_STAGE != _norm(plan.get("stage")):
         holds.append(STAGE_NOT_ELIGIBLE)
-    if (run_mode == config.MODE_LIVE and not plan["match"]["childIds"] and MATCH_HOLD not in holds
-            and "purchase" in plan):
-        holds.append(NEW_CHILD_NOT_BUILT)          # step 3a writes for an existing child only
     holds = sorted(set(holds))
     flags = [f for f in plan["flags"] if not (job.source == "webhook" and f == "stage_not_approved")]
     digest = plan_hash(plan)
@@ -241,43 +248,60 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> None:
     _ask_plan(job, deps, plan, digest, run_mode, changed)
 
 
-def _end(job, deps, status: str, code: str, plan: dict | None = None, problems: list | None = None) -> None:
-    store.set_status(job.id, status, last_error_code=code)
-    deps.notifier.notice(messages.done_text(plan, [], {}, problems or [code], "live") if plan
-                         else f"⚠️ Ad hoc deal {messages.deal_link(job.deal_id)}: "
-                              f"{messages.SENTENCES.get(code, code)}")
+def _end(job, deps, status: str, code: str, plan: dict | None = None, problems: list | None = None,
+         extra: list | None = None) -> None:
+    store.set_status(job.id, status, last_error_code=",".join([code, *(extra or [])]))
+    text = (messages.done_text(plan, [], {}, problems or [code], "live") if plan
+            else f"⚠️ Ad hoc deal {messages.deal_link(job.deal_id)}: {messages.SENTENCES.get(code, code)}")
+    if extra:                                           # codes of earlier problems (ids and codes only, no names)
+        text += "\n" + "\n".join(f"• {messages.SENTENCES.get(c.split(':')[0], c)}" for c in extra) \
+            + f"\nCodes: {', '.join(extra)}"
+    deps.notifier.notice(text)
 
 
-def _write_phase(job, deps, plan: dict, digest: str) -> None:
-    """LIVE: write the approved plan for an EXISTING child. Book first (the money step), then the administrative
-    tag and end date. Every request is sent once and never retried; an unclear outcome ends `needs_review`."""
+def _write_phase(job, deps, plan, digest: str) -> None:
+    """LIVE: write the approved plan. An EXISTING child is booked and tagged and loses its end date; a NEW child is
+    created first (step 3b). Book first (the money step), then the administrative writes. Every request is sent once
+    and never retried; an unclear outcome ends `needs_review`."""
     if deps.writes is None:
         raise RuntimeError("no Famly writer configured")
-    child_id = plan["match"]["childIds"][0]
-    purchase = plan["purchase"]
     store.set_status(job.id, store.WRITING, plan_hash=digest)
-    if not store.mark_write_sent(job.id):          # persisted BEFORE the request: a job never books twice
-        _end(job, deps, store.NEEDS_REVIEW, "duplicate_write_blocked")
-        return
+    problems: list[str] = []
     outcomes: list[str] = []
+    if plan["match"]["childIds"]:
+        child_id = plan["match"]["childIds"][0]
+        if _contacts_missing(job, child_id):
+            problems.append("contacts_missing")        # a Retry found a child an earlier job created
+    else:
+        child_id = _create_new_child(job, deps, plan, outcomes, problems)
+        if child_id is None:
+            return
+    purchase = {**plan["purchase"], "childId": child_id}   # the plan hash has childId None; filled AFTER creation
+    new = not plan["match"]["childIds"]
+    if not store.mark_write_sent(job.id):          # persisted BEFORE the request: a job never books twice
+        _end(job, deps, store.NEEDS_REVIEW, "duplicate_write_blocked", extra=problems)
+        return
     try:
         result = deps.writes.book(child_id, purchase)
     except writes.BookingRejected as exc:
-        _end(job, deps, store.FAILED, exc.code)
+        _end(job, deps, store.FAILED, exc.code, extra=problems)
         return
     except writes.BookingUnknown:
-        _end(job, deps, store.NEEDS_REVIEW, "booking_outcome_unknown")
+        _end(job, deps, store.NEEDS_REVIEW, "booking_outcome_unknown", extra=problems)
         return
     outcomes.append(f"booked:{len(purchase['sessionBookings'])}")
     store.update(job.id, outcomes=outcomes)
-    problems: list[str] = []
     if not result.verified:
         problems.append("booking_mismatch:" + "+".join(result.mismatches))
     results: dict[str, str] = {}
     if plan["adHocOnly"]:
         results["tag"] = deps.writes.tag(child_id, plan["siteId"])
-        results["end"] = deps.writes.remove_end_date(child_id)
-        outcomes += [results["tag"], results["end"]]
+        outcomes.append(results["tag"])
+        if new:
+            results["end"] = writes.END_NONE            # a new child has no end date: that step is skipped
+        else:
+            results["end"] = deps.writes.remove_end_date(child_id)
+            outcomes.append(results["end"])
         store.update(job.id, outcomes=outcomes)
         if results["tag"] not in (writes.TAG_ADDED, writes.TAG_PRESENT):
             problems.append(results["tag"])
@@ -285,7 +309,58 @@ def _write_phase(job, deps, plan: dict, digest: str) -> None:
             problems.append(results["end"])
     store.set_status(job.id, store.NEEDS_REVIEW if problems else store.DONE,
                      last_error_code=",".join(problems) or None)
-    deps.notifier.notice(messages.done_text(plan, result.purchase_ids, results, problems, "live"))
+    deps.notifier.notice(messages.done_text(plan, result.purchase_ids, results, problems, "live",
+                                            child_id=child_id if new else None))
+
+
+def _contacts_missing(job, child_id: str) -> bool:
+    """A child that an EARLIER job of this deal created (a Retry found it by the deal reference): its contacts are not
+    created again; if that job did not record every contact as created or present, a person is told."""
+    for earlier in store.earlier_creates_for_deal(job.deal_id, child_id, job.id):
+        entries = [o for o in earlier.outcomes or [] if str(o).startswith("contact:")]
+        if not entries or any(o.rsplit(":", 1)[1] not in new_child.OK_OUTCOMES for o in entries):
+            return True
+    return False
+
+
+def _create_new_child(job, deps, plan, outcomes: list, problems: list) -> str | None:
+    """Create the child, its contacts, the bill payer and the recipient link. Returns the child id, or None when the
+    job has ended (nothing further is written). Contact, bill payer and recipient problems are collected in
+    `problems` and never stop the booking."""
+    if deps.public is None or deps.famly_factory is None or deps.deal_context is None:
+        raise RuntimeError("no Famly create client configured")
+    deal, contacts = deps.deal_context(job.deal_id)       # names and emails: memory only, for this call
+    planned = {(str(e["hubspotContactId"]), bool(e["isBillPayer"])) for e in plan.get("contacts") or []}
+    if (deal is None or contacts is None or not plan.get("contacts")
+            or planned != {(str(c.hubspot_id), bool(c.is_bill_payer)) for c in contacts}):
+        _end(job, deps, store.FAILED if deal is None or contacts is None else store.NEEDS_REVIEW,
+             "deal_not_readable" if deal is None or contacts is None else "plan_changed")
+        return None                                         # nothing was sent
+    famly = deps.famly_factory()
+    try:
+        child_id = new_child.ensure_child(job, deps.public, famly, plan, deal, deps.sleep)
+    except new_child.StopJob as stop:
+        _end(job, deps, stop.status, stop.code)
+        return None
+    made = new_child.create_contacts(job, deps.public, famly, plan, contacts, child_id, deps.sleep)
+    outcomes += made.outcomes
+    problems += made.problems
+    store.update(job.id, outcomes=outcomes)
+    payer = None
+    if plan.get("billPayer"):
+        payer = new_child.bill_payer_stage(job, deps.public, famly, plan, contacts, child_id, deps.sleep)
+        outcomes.append(f"billpayer:{payer.code}")
+        store.update(job.id, outcomes=outcomes)
+        if payer.code not in new_child.payer_scan.SUCCESS_CODES:
+            problems.append(payer.code)
+        link_code, link_problem = new_child.recipient_stage(
+            deps.public, famly, plan, contacts, made.contact_ids, payer, deps.sleep)
+        if link_code:
+            outcomes.append(f"billpayerlink:{link_code}")
+            store.update(job.id, outcomes=outcomes)
+            if link_problem:
+                problems.append(link_code)
+    return child_id
 
 
 def _nonce() -> str:

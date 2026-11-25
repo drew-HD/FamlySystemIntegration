@@ -126,5 +126,5 @@ A hold now says WHICH dates it is about: past, weekend and duplicate dates, and 
   - the answer is checked against the approval (rows, prices, pricing groups, discount); a difference -> `needs_review` `booking_mismatch`;
   - the tag and the end date are settled by READING the child afterwards, never re-sent; a problem -> `needs_review` with the code.
 - `write_sent` is persisted atomically BEFORE the booking is sent, so a job never books twice; a job caught mid-write is `needs_review` `interrupted` and is never replayed.
-- A plan that needs a NEW child is held `new_child_not_built` in live mode (no approval asked) until step 3b.
+- Step 3b (built, fakes only, NOT run live): a NEW child is created in live mode after the Slack approval (child with no end date, contacts bill payer first, bill payer stage, recipient link, URN from the onboarding allocator), then booked and tagged; `new_child_not_built` is gone. Design and decisions: docs/adhoc_3b_design.md.
 - No HubSpot write-back yet (no famly_childid / status property is written to the deal).
