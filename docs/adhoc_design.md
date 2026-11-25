@@ -116,3 +116,15 @@ Famly accepts a booking after an enrolment has ended (proved on a test child), s
 
 ## Hold notices name the dates (Drew, 2026-11-24)
 A hold now says WHICH dates it is about: past, weekend and duplicate dates, and for a Famly booking conflict each conflicting date with its kind (e.g. `ALREADY_BOOKED`, or "another session on this booking is on the same day"). The plan carries `details` (ISO dates and conflict kinds only; no names) and the hold notice prints them as `28 Dec 2026`.
+
+## Worker, step 3a (built, fakes only): live writes for an EXISTING child
+- `ADHOC_MODE=live` now runs the worker; there is no deal allow-list (Drew): the control is what is enqueued plus the Slack Approve on every plan. `actions/adhoc/writes.py` holds the only Famly writes: book (`UpsertPurchase`), tag (`POST /v2/tags/<id>/assign`) and end-date removal (`EditChildActiveDates`, startDate only). No delete or booking update exists in the package.
+- The plan carries the EXACT purchase (session availability ids, prices, pricing groups, flat discount amount) and the site id, so the plan hash covers precisely what is sent; a live job writes only if the re-plan after the Approve click has the same hash.
+- Order: BOOK first (the money step), then tag and end date (only for an ad hoc only child; a standard child is booked and otherwise untouched). Each request is sent ONCE, never retried:
+  - booking refused (GraphQL errors with no data, or HTTP 4xx) -> `failed`, nothing booked;
+  - booking outcome unclear (timeout, 5xx, errors WITH data) -> `needs_review` `booking_outcome_unknown`, never re-sent (a later Retry re-plans and Famly's conflict preview then reports a session that is already booked);
+  - the answer is checked against the approval (rows, prices, pricing groups, discount); a difference -> `needs_review` `booking_mismatch`;
+  - the tag and the end date are settled by READING the child afterwards, never re-sent; a problem -> `needs_review` with the code.
+- `write_sent` is persisted atomically BEFORE the booking is sent, so a job never books twice; a job caught mid-write is `needs_review` `interrupted` and is never replayed.
+- A plan that needs a NEW child is held `new_child_not_built` in live mode (no approval asked) until step 3b.
+- No HubSpot write-back yet (no famly_childid / status property is written to the deal).

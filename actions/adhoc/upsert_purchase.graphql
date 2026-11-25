@@ -1,0 +1,20 @@
+# THE BOOKING WRITE (INTERNAL API) of the ad hoc worker: books the sessions of ONE approved plan. Proven by
+# adhoc-probe-write on test children. The response selects discountAmount and total so the worker can check what
+# Famly stored against what was approved. There is no delete or other mutation in this package.
+mutation UpsertPurchase($purchases: [PurchaseInput!]!) {
+  finance {
+    purchases {
+      update(purchases: $purchases) {
+        id
+        discountAmount
+        total
+        sessionBookings {
+          sessionPurchaseId
+          purchaseDate
+          bookedPrice
+          pricingGroupId
+        }
+      }
+    }
+  }
+}

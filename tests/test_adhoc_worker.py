@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from actions.adhoc import approval, cli_enqueue, store, worker
+from actions.adhoc import writes as writes_mod
 from integrations import slack
 
 
@@ -17,7 +18,11 @@ def plan(holds=(), flags=("stage_not_approved",), stage="Approved", child=("c1",
     match = {"via": "urn", "childIds": list(child)}
     if candidates is not None:
         match["candidateIds"] = list(candidates)
-    return {"dealId": "1", "stage": stage, "site": "HDCW", "holds": list(holds), "flags": list(flags), "match": match,
+    purchase = {"childId": child[0] if child else None, "discountAmount": discount[1], "productBookings": [],
+                "sessionBookings": [{"bookedPrice": "75.00", "pricingGroupId": "g", "purchaseDate": "2026-12-28",
+                                     "sessionAvailabilityId": "sa-1"}]}
+    return {"dealId": "1", "stage": stage, "site": "HDCW", "siteId": "inst-cw", "purchase": purchase,
+            "holds": list(holds), "flags": list(flags), "match": match,
             "adHocOnly": True, "total": total, "discountAmount": discount[1], "discountFraction": discount[0],
             "totalAfterDiscount": f"{float(total) - float(discount[1]):.2f}", "steps": ["book_1_sessions"],
             "bookings": [{"date": "2026-12-28", "session": "Morning", "price": "75.00", "ageBand": "under3",
@@ -115,12 +120,11 @@ class StoreTests(Case):
 
 
 class GateTests(Case):
-    def test_mode_off_and_live_do_nothing(self):
+    def test_mode_off_does_nothing(self):
         store.enqueue("1", "dry")
-        for mode, expect in (("off", None), ("live", "live_not_built")):
-            with mock.patch.dict(os.environ, {"ADHOC_MODE": mode}):
-                result = worker.run_once(self.deps(plan()))
-            self.assertEqual((result["ran"], result.get("refused")), (False, expect))
+        with mock.patch.dict(os.environ, {"ADHOC_MODE": "off"}):
+            result = worker.run_once(self.deps(plan()))
+        self.assertEqual(result["ran"], False)
         self.assertEqual((store.status_counts(), self.notifier.sent), ({store.QUEUED: 1}, []))
 
     def test_a_clean_plan_posts_the_approval_and_waits(self):
@@ -283,6 +287,123 @@ class ApprovalTests(Case):
         with mock.patch.dict(os.environ, {"ADHOC_MODE": "off"}):
             self.assertIn(approval.handle_click(slack.ACTION_ADHOC_RETRY, value, "u"),
                           (approval.MSG_RETRY_OFF, approval.MSG_RETRY_HANDLED))
+
+
+class FakeWrites:
+    """Stands in for actions.adhoc.writes.FamlyWriter; records every call."""
+
+    def __init__(self, book=None, tag="tag_added", end="end_date_removed"):
+        self.calls, self._book, self._tag, self._end = [], book, tag, end
+
+    def book(self, child_id, purchase):
+        self.calls.append(("book", child_id, purchase))
+        if isinstance(self._book, Exception):
+            raise self._book
+        return self._book or writes_mod.BookingResult(["p1"], True)
+
+    def tag(self, child_id, institution_id):
+        self.calls.append(("tag", child_id, institution_id))
+        return self._tag
+
+    def remove_end_date(self, child_id):
+        self.calls.append(("end", child_id))
+        return self._end
+
+
+class LiveWriteTests(Case):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(os.environ, {"ADHOC_MODE": "live"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def approved_run(self, writes, p=None):
+        """Plan, approve in Slack, then the worker writes. Returns the final job."""
+        p = p or plan()
+        store.enqueue("1", "live")
+        deps = self.deps(p)
+        deps.writes = writes
+        worker.run_once(deps)                                        # plans, asks
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        worker.run_once(deps)                                        # re-plans, unchanged: writes
+        return store.latest_for_deal("1")
+
+    def test_an_approved_plan_books_exactly_the_approved_purchase_then_tags_and_removes_the_end_date(self):
+        w = FakeWrites()
+        job = self.approved_run(w)
+        self.assertEqual([c[0] for c in w.calls], ["book", "tag", "end"])
+        self.assertEqual(w.calls[0][2], plan()["purchase"])          # the exact approved purchase, nothing rebuilt
+        self.assertEqual(w.calls[1][1:], ("c1", "inst-cw"))
+        self.assertEqual((job.status, job.write_sent, job.outcomes), (store.DONE, True, ["booked:1", "tag_added", "end_date_removed"]))
+        self.assertIn("✅ Ad hoc done", self.notifier.sent[-1]["text"])
+
+    def test_a_standard_child_is_booked_but_not_tagged_and_keeps_their_enrolment(self):
+        w = FakeWrites()
+        job = self.approved_run(w, dict(plan(), adHocOnly=False))
+        self.assertEqual(([c[0] for c in w.calls], job.status), (["book"], store.DONE))
+
+    def test_a_rejected_booking_fails_and_nothing_else_is_written(self):
+        w = FakeWrites(book=writes_mod.BookingRejected("booking_rejected"))
+        job = self.approved_run(w)
+        self.assertEqual(([c[0] for c in w.calls], job.status, job.last_error_code), (["book"], store.FAILED, "booking_rejected"))
+
+    def test_an_unclear_booking_outcome_needs_a_person_and_is_never_sent_again(self):
+        w = FakeWrites(book=writes_mod.BookingUnknown())
+        job = self.approved_run(w)
+        self.assertEqual(([c[0] for c in w.calls], job.status, job.last_error_code),
+                         (["book"], store.NEEDS_REVIEW, "booking_outcome_unknown"))
+        self.assertEqual(store.recover_in_flight(), 0)
+        self.assertIsNone(store.claim_next())                         # nothing re-queues it
+        self.assertIn("NOT sent again", self.notifier.sent[-1]["text"])
+
+    def test_a_booking_that_does_not_match_the_approval_or_a_failed_tag_ends_needs_review(self):
+        w = FakeWrites(book=writes_mod.BookingResult(["p1"], False, ["discount"]), tag="tag_failed")
+        job = self.approved_run(w)
+        self.assertEqual(job.status, store.NEEDS_REVIEW)
+        self.assertEqual(job.last_error_code, "booking_mismatch:discount,tag_failed")
+        self.assertEqual([c[0] for c in w.calls], ["book", "tag", "end"])        # the booking is done: the rest still ran
+
+    def test_a_job_that_already_sent_its_booking_never_sends_another(self):
+        w = FakeWrites()
+        store.enqueue("1", "live")
+        deps = self.deps(plan())
+        deps.writes = w
+        worker.run_once(deps)
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        job = store.latest_for_deal("1")
+        self.assertTrue(store.mark_write_sent(job.id))                # an earlier attempt already sent it
+        worker.run_once(deps)
+        after = store.latest_for_deal("1")
+        self.assertEqual((w.calls, after.status, after.last_error_code), ([], store.NEEDS_REVIEW, "duplicate_write_blocked"))
+
+    def test_a_new_child_is_held_in_live_mode_and_no_approval_is_asked(self):
+        w = FakeWrites()
+        store.enqueue("1", "live")
+        deps = self.deps(plan(child=()))
+        deps.writes = w
+        worker.run_once(deps)
+        job = store.latest_for_deal("1")
+        self.assertEqual((job.status, job.holds, w.calls), (store.HELD, [worker.NEW_CHILD_NOT_BUILT], []))
+        self.assertEqual(self.notifier.sent[-1]["kind"], "hold")
+
+    def test_dry_mode_never_touches_the_writer(self):
+        with mock.patch.dict(os.environ, {"ADHOC_MODE": "dry"}):
+            store.enqueue("1", "dry")
+            deps = self.deps(plan())
+            deps.writes = mock.Mock(side_effect=AssertionError("dry mode wrote"))
+            worker.run_once(deps)
+            approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+            worker.run_once(deps)
+        self.assertEqual(store.latest_for_deal("1").status, store.DRY_DONE)
+        self.assertEqual(deps.writes.mock_calls, [])
+
+    def test_a_worker_that_died_mid_write_is_never_replayed(self):
+        job = store.enqueue("1", "live").job
+        store.set_status(job.id, store.WRITING)
+        store.mark_write_sent(job.id)
+        self.assertEqual(store.recover_in_flight(), 1)
+        self.assertEqual(store.get(job.id).last_error_code, "interrupted")
+        self.assertIsNone(store.claim_next())
 
 
 class SlackWiringTests(unittest.TestCase):

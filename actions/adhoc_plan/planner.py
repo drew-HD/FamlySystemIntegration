@@ -153,6 +153,7 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     try:
         site, site_id = derive.site_for_location(deal.get("location_of_interest"))
         plan["site"] = site
+        plan["siteId"] = site_id
     except derive.Hold:
         holds.append("site_unmapped")
         return plan
@@ -234,12 +235,14 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
                 plan["bookings"].append({"date": day.isoformat(), "session": title, "price": booking["bookedPrice"],
                                          "pricingGroup": group, "ageBand": writer.age_band(birthday, day)})
             discount_amount = (total * fraction).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            plan["purchase"] = None          # set below, once the purchase is built
             plan["total"] = f"{total:.2f}"
             plan["discountAmount"] = f"{discount_amount:.2f}"
             plan["totalAfterDiscount"] = f"{total - discount_amount:.2f}"
             purchase = {"childId": child.id if child else None, "discountAmount": f"{discount_amount:.2f}",
                         "productBookings": [],
                         "sessionBookings": bookings}
+            plan["purchase"] = purchase     # EXACTLY what a live run sends: ids, prices and discount, fixed at approval
             if child is not None:
                 result = deps.preview(child.id, [purchase], sessions[0][0]) or {}
                 booked = {(sid, d.isoformat()) for sid, (d, _t) in zip(session_ids, sessions)}

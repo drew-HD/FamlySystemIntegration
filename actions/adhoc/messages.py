@@ -56,6 +56,18 @@ SENTENCES = {
     "price_not_a_number": "A session price could not be read.",
     "price_not_positive": "A session price is zero or negative.",
     "deal_not_found": "The deal could not be read from HubSpot.",
+    "new_child_not_built": "This deal needs a NEW child in Famly, and creating children from here is not switched on "
+                           "yet. Create the child in Famly (or fix the match), then press Retry.",
+    "booking_rejected": "Famly refused the booking. Nothing was booked.",
+    "purchase_not_for_this_child": "The booking did not match the child. Nothing was booked.",
+    "booking_outcome_unknown": "The booking request did not get a clear answer, so it may or may not have gone in. "
+                               "Check the child's bookings in Famly. It was NOT sent again.",
+    "booking_mismatch": "The booking went in but Famly's figures differ from what was approved. Check it in Famly.",
+    "duplicate_write_blocked": "This job had already sent its booking, so it was not sent again.",
+    "interrupted": "The worker stopped part-way through writing. Check the child in Famly before doing anything else.",
+    "tag_not_found": "The Ad Hoc Only tag was not found (or more than one) for this site, so it was not added.",
+    "tag_failed": "The Ad Hoc Only tag could not be added.",
+    "end_date_failed": "The child's end date could not be removed.",
     "approval_rejected": "The plan was rejected.",
     "slack_post_failed": "The approval message could not be posted to Slack.",
 }
@@ -140,3 +152,20 @@ def hold_text(deal_id: str, codes, mode: str, details=None) -> str:
     return "\n".join([f"*{dry}Ad hoc: not done, a person needs to check*", f"Deal: {deal_link(deal_id)}",
                       *[f"• {t}" for t in sentences],
                       "Fix it in HubSpot or Famly, then press Retry.", f"Codes: {', '.join(codes)}"])
+
+
+def done_text(plan: dict, booked_ids: list, outcomes: dict, problems: list, mode: str) -> str:
+    """The after-writing notice: counts, money and codes. No names."""
+    n = len(plan["bookings"])
+    head = "✅ Ad hoc done" if not problems else "⚠️ Ad hoc done with problems"
+    lines = [f"{head} for deal {deal_link(plan['dealId'])}: {n} session{'s' if n != 1 else ''} booked "
+             f"(total {_money(plan['total'])}"
+             + (f", discount -{_money(plan['discountAmount'])}, to pay {_money(plan['totalAfterDiscount'])}"
+                if plan["discountAmount"] != "0.00" else "") + ")."]
+    if "tag" in outcomes:
+        lines.append(f"Ad Hoc Only tag: {outcomes['tag'].replace('tag_', '').replace('_', ' ')}. "
+                     f"End date: {outcomes['end'].replace('end_date_', '').replace('_', ' ')}.")
+    if problems:
+        lines += [f"• {SENTENCES.get(c.split(':')[0], c)}" for c in problems]
+        lines.append(f"Codes: {', '.join(problems)}")
+    return "\n".join(lines)

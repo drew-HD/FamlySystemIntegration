@@ -12,7 +12,7 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 - Prod .env (2026-11-18): COMMIT_ENABLED true, allow-list `*`, QUEUE_MODE auto, ONBOARD_MODE live, BILL_PAYER on, LEGACY_WRITE off. Queue 303 done, 0 held.
 - `onboard-audit --preview-estimate` (live 2026-11-18): fees vs Famly's previewed estimate of the active plan (only PUT, preview-only, `actions/plan_estimate`); cron stays GET-only. Plan dates compare the span of all plans (funding/advanced fees split plans): plan_from_differs / plan_to_differs / plan_gap_between_plans.
 
-- Ad hoc (on main): read-only `adhoc-audit`, `adhoc-dry-run`, `adhoc-probe-read`, and test-children-only `create-test-children` / `adhoc-probe-write`; worker step 1 (dry mode, jobs table, `adhoc-enqueue|worker|status`, ADHOC_MODE default off) on branch adhoc-worker-store, fakes only, NOT run live. Design: docs/adhoc_design.md.
+- Ad hoc (on main unless noted): read-only `adhoc-audit`, `adhoc-dry-run`, `adhoc-probe-read`; test-children-only `create-test-children` / `adhoc-probe-write`; worker steps 1-2 (jobs table, dry mode, Slack gate; ADHOC_MODE default off, prod dry). Step 3a (live writes for an EXISTING child: book, tag, end date) on branch adhoc-writes, fakes only, NOT run live; new-child creation (3b) and the intake webhook are not built. Design: docs/adhoc_design.md.
 
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
