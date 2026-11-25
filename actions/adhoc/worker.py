@@ -31,7 +31,7 @@ from typing import Any, Callable
 
 from actions.adhoc_plan import planner
 
-from . import config, messages, new_child, store, writes
+from . import config, messages, new_child, store, writes, deal_writeback
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ class Deps:
     public: Any = None            # the public-API GraphQL client (child and contact creates, bill payer stage)
     famly_factory: Callable[[], Any] | None = None       # a FRESH FamlyReads per call (it memoises its roster)
     deal_context: Callable[[str], tuple] | None = None   # deal id -> (deal properties, contacts), in memory only
+    deal_writer: Any = None       # actions.adhoc.deal_writeback.DealWriter: the URN and child id onto the HubSpot deal
     sleep: Callable[[float], None] = time.sleep
 
     def __post_init__(self):
@@ -73,7 +74,7 @@ def default_deps() -> Deps:
 
     from .notifier import SlackNotifier
     readers = Readers()
-    famly_writer, public, factory, context = None, None, None, None
+    famly_writer, public, factory, context, deal_writer = None, None, None, None, None
     if config.mode() == config.MODE_LIVE:                  # the write clients exist only in live mode
         from actions.onboard_dry_run.famly_reads import FamlyReads
         from actions.urn_lookup import runner as urn_runner
@@ -83,8 +84,11 @@ def default_deps() -> Deps:
         public = urn_runner._public_client()
         factory = lambda: FamlyReads(public)  # noqa: E731
         context = readers.deal_and_contacts
+        from core.hubspot import HubSpotClient
+        deal_writer = deal_writeback.DealWriter(HubSpotClient())      # read-write client: live mode only
     return Deps(plan_deal=readers.plan_deal, child_name=readers.child_name, notifier=SlackNotifier(),
-                writes=famly_writer, public=public, famly_factory=factory, deal_context=context)
+                writes=famly_writer, public=public, famly_factory=factory, deal_context=context,
+                deal_writer=deal_writer)
 
 
 def recover() -> int:
@@ -270,7 +274,10 @@ def _write_phase(job, deps, plan, digest: str) -> None:
     outcomes: list[str] = []
     if plan["match"]["childIds"]:
         child_id = plan["match"]["childIds"][0]
-        if _contacts_missing(job, child_id):
+        if plan.get("resumeContacts"):                 # an earlier job made this child but never reached its contacts
+            if not _resume_contacts(job, deps, plan, outcomes, problems, child_id):
+                return
+        elif _contacts_missing(job, child_id):
             problems.append("contacts_missing")        # a Retry found a child an earlier job created
     else:
         child_id = _create_new_child(job, deps, plan, outcomes, problems)
@@ -323,29 +330,33 @@ def _contacts_missing(job, child_id: str) -> bool:
     return False
 
 
-def _create_new_child(job, deps, plan, outcomes: list, problems: list) -> str | None:
-    """Create the child, its contacts, the bill payer and the recipient link. Returns the child id, or None when the
-    job has ended (nothing further is written). Contact, bill payer and recipient problems are collected in
-    `problems` and never stop the booking."""
-    if deps.public is None or deps.famly_factory is None or deps.deal_context is None:
-        raise RuntimeError("no Famly create client configured")
-    deal, contacts = deps.deal_context(job.deal_id)       # names and emails: memory only, for this call
+def _deal_unchanged(job, deps, plan, deal, contacts) -> bool:
+    """The deal and contacts just read still match the approved plan's contacts; else the job ends (nothing sent)."""
     planned = {(str(e["hubspotContactId"]), bool(e["isBillPayer"])) for e in plan.get("contacts") or []}
     if (deal is None or contacts is None or not plan.get("contacts")
             or planned != {(str(c.hubspot_id), bool(c.is_bill_payer)) for c in contacts}):
         _end(job, deps, store.FAILED if deal is None or contacts is None else store.NEEDS_REVIEW,
              "deal_not_readable" if deal is None or contacts is None else "plan_changed")
-        return None                                         # nothing was sent
-    if not new_child.deal_matches_plan(deal, plan):         # the child's data must be what was approved
-        _end(job, deps, store.NEEDS_REVIEW, "plan_changed")
-        return None
-    famly = deps.famly_factory()
-    try:
-        child_id = new_child.ensure_child(job, deps.public, famly, plan, deal, deps.sleep)
-    except new_child.StopJob as stop:
-        _end(job, deps, stop.status, stop.code)
-        return None
-    made = new_child.create_contacts(job, deps.public, famly, plan, contacts, child_id, deps.sleep)
+        return False
+    return True
+
+
+def _record_child_id(job, deps, child_id: str, outcomes: list, problems: list) -> None:
+    """Put the Famly child id on the HubSpot deal (only when empty; confirmed by a re-read). HubSpot never blocks Famly:
+    a failure is a problem code and the job carries on."""
+    code = deps.deal_writer.ensure_child_id(job.deal_id, child_id)
+    outcomes.append(f"hubspot:{code}")
+    store.update(job.id, outcomes=outcomes)
+    if code == deal_writeback.CHILDID_WRITE_FAILED:
+        problems.append(code)
+
+
+def _contacts_and_payer(job, deps, plan, contacts, child_id: str, famly, outcomes: list, problems: list,
+                        fresh_child: bool) -> None:
+    """Contacts (bill payer first), the bill payer stage and the recipient link. Problems are collected and never stop
+    the booking. `fresh_child` False looks every contact up first (a RESUMED child)."""
+    made = new_child.create_contacts(job, deps.public, famly, plan, contacts, child_id, deps.sleep,
+                                     fresh_child=fresh_child)
     outcomes += made.outcomes
     problems += made.problems
     store.update(job.id, outcomes=outcomes)
@@ -363,6 +374,58 @@ def _create_new_child(job, deps, plan, outcomes: list, problems: list) -> str | 
             store.update(job.id, outcomes=outcomes)
             if link_problem:
                 problems.append(link_code)
+
+
+def _resume_contacts(job, deps, plan, outcomes: list, problems: list, child_id: str) -> bool:
+    """A child an EARLIER job of this deal created but never reached the contacts for (it recorded no contact outcome):
+    create the contacts and the bill payer now, looking every parent up first so none is duplicated. Returns False
+    when the job has ended (nothing further is written)."""
+    if (deps.public is None or deps.famly_factory is None or deps.deal_context is None
+            or deps.deal_writer is None):
+        raise RuntimeError("no Famly create client configured")
+    earlier = store.earlier_creates_for_deal(job.deal_id, child_id, job.id)     # re-checked at the point of writing
+    if not earlier or any(str(o).startswith("contact:") for e in earlier for o in e.outcomes or []):
+        _end(job, deps, store.NEEDS_REVIEW, "plan_changed")   # the approval was for a child with no contacts yet
+        return False
+    deal, contacts = deps.deal_context(job.deal_id)       # names and emails: memory only, for this call
+    if not _deal_unchanged(job, deps, plan, deal, contacts):
+        return False
+    famly = deps.famly_factory()
+    _record_child_id(job, deps, child_id, outcomes, problems)        # the deal may not have the child id yet
+    _contacts_and_payer(job, deps, plan, contacts, child_id, famly, outcomes, problems, fresh_child=False)
+    return True
+
+
+def _create_new_child(job, deps, plan, outcomes: list, problems: list) -> str | None:
+    """Put the URN on the deal, create the child, give the deal its id, then the contacts, the bill payer and the
+    recipient link. Returns the child id, or None when the job has ended (nothing further is written). Contact, bill
+    payer, recipient and HubSpot child-id problems are collected in `problems` and never stop the booking."""
+    if (deps.public is None or deps.famly_factory is None or deps.deal_context is None
+            or deps.deal_writer is None):
+        raise RuntimeError("no Famly create client configured")
+    deal, contacts = deps.deal_context(job.deal_id)       # names and emails: memory only, for this call
+    if not _deal_unchanged(job, deps, plan, deal, contacts):
+        return None                                         # nothing was sent
+    if not new_child.deal_matches_plan(deal, plan):         # the child's data must be what was approved
+        _end(job, deps, store.NEEDS_REVIEW, "plan_changed")
+        return None
+    urn = (plan.get("urn") or {}).get("urn")
+    if not urn:
+        _end(job, deps, store.NEEDS_REVIEW, "urn_missing")  # nothing was sent
+        return None
+    try:
+        deps.deal_writer.ensure_urn(job.deal_id, urn)       # BEFORE any Famly request (as onboarding does)
+    except deal_writeback.WritebackFailed as exc:
+        _end(job, deps, store.NEEDS_REVIEW, exc.code)       # nothing was sent to Famly
+        return None
+    famly = deps.famly_factory()
+    try:
+        child_id = new_child.ensure_child(job, deps.public, famly, plan, deal, deps.sleep)
+    except new_child.StopJob as stop:
+        _end(job, deps, stop.status, stop.code)
+        return None
+    _record_child_id(job, deps, child_id, outcomes, problems)
+    _contacts_and_payer(job, deps, plan, contacts, child_id, famly, outcomes, problems, fresh_child=True)
     return child_id
 
 

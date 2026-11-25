@@ -28,3 +28,6 @@ Goal: when an approved ad hoc plan needs a new child, create the child (NO end d
 create once and `child_create_sent` blocks a replay; the Rejected/Unknown settle matrix; crash after create -> needs_review and a Retry finds the child with no second create; a child appearing before the write -> stop, no create, no booking; the booking payload equals the approved one with `childId` filled; child payload has NO `lastDay` and the right group by age at firstDay; contact order and independence; bill payer unconfirmed -> needs_review, never a second send; no names in Slack/log/outcomes; `new_child_not_built` gone and dry mode unchanged; URN taken from the shared allocator and not duplicated.
 
 Out of scope here: a live test on a test deal (Drew approves and runs it later).
+
+## Addendum, 2026-11-25 (after the first live deal)
+See docs/adhoc_design.md, "New-child fixes after the first live deal": fresh roster scans, the URN and child id written to the HubSpot deal (URN before the create), and resuming contacts for a child an earlier job made without them. The write order becomes: URN on the deal -> re-lookup -> create -> child id on the deal -> contacts -> bill payer -> recipient link -> booking -> tag.

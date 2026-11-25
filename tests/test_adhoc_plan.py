@@ -129,6 +129,34 @@ class AllocatedUrnTests(Case):
             self.assertIsNone(readers.allocated_urn_for_deal("1"))
 
 
+class ResumeContactsPlanTests(Case):
+    """A child an earlier job made without its contacts: the plan carries the contacts and bill payer to create."""
+
+    def planned(self, resume):
+        made = kid("made", emails=())
+        made.external_id = "HD0042CW"
+        deps = planner.Deps(has_plan=lambda c: False, read_sessions=lambda c, d: LOOKUP, preview=lambda c, p, d: {},
+                            price_child_for_site=lambda s: "t", allocated_urn=lambda deal_id: "HD0042CW",
+                            resume_contacts=resume)
+        contacts = [type("C", (), dict(hubspot_id="h1", is_bill_payer=True, email="a@x.org",
+                                       has_first_and_last_name=True))()]
+        return planner.build_plan(deal(), "Approved", contacts, Index({"made": made}), deps, TODAY)
+
+    def test_resume_adds_the_contacts_section_and_the_step(self):
+        plan = self.planned(lambda deal_id, child_id: True)
+        self.assertEqual((plan["match"]["via"], plan["resumeContacts"]), ("allocated_urn", True))
+        self.assertEqual(plan["contacts"], [{"hubspotContactId": "h1", "isBillPayer": True}])
+        self.assertEqual(plan["steps"][0], "create_contacts")
+        self.assertEqual(plan["holds"], [])
+
+    def test_no_resume_means_the_plan_is_unchanged(self):
+        for resume in (lambda deal_id, child_id: False, None):
+            plan = self.planned(resume)
+            self.assertNotIn("resumeContacts", plan)
+            self.assertNotIn("contacts", plan)
+            self.assertNotIn("create_contacts", plan["steps"])
+
+
 class WhoAndStepsTests(Case):
     def test_existing_child_without_plan_is_ad_hoc_only(self):
         plan = self.plan([kid()])

@@ -74,6 +74,8 @@ SENTENCES = {
     "child_outcome_unknown": "The child create did not get a clear answer and no child was found. Check Famly. "
                              "It was NOT sent again.",
     "child_ambiguous": "More than one Famly child carries this deal's reference. Check Famly.",
+    "urn_hubspot_write_failed": "The child's URN could not be written to the HubSpot deal, so nothing was created in Famly.",
+    "hubspot_childid_write_failed": "The Famly child id could not be written to the HubSpot deal (the child and booking are fine).",
     "urn_missing": "No URN was allocated for this deal, so no child was created.",
     "readback_child_lookup_failed": "The child was created but could not be found again by its URN. "
                                     "Check Famly. Nothing else was written.",
@@ -118,6 +120,9 @@ def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_n
     match = plan["match"]
     if len(match["childIds"]) == 1:
         lines.append(f"Child exists in Famly: {child_name or 'name not available'} (Famly Id: {match['childIds'][0]})")
+        if plan.get("resumeContacts"):
+            lines.append(f"Parent contacts: {len(plan.get('contacts') or [])} to be created for this child (an earlier "
+                         "run made the child but stopped before its contacts)")
     else:
         lines.append("Child doesn't exist in Famly, to be created")
         lines += _new_child_lines(plan)

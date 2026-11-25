@@ -9,10 +9,11 @@ from datetime import date
 from types import SimpleNamespace
 from unittest import mock
 
-from actions.adhoc import approval, child_input, messages, new_child, store, worker
+from actions.adhoc import approval, child_input, deal_writeback, messages, new_child, store, worker
 from actions.adhoc import writes as writes_mod
 from actions.adhoc_plan import planner, urn_plan
 from actions.onboard import famly_writes
+from actions.pull_roster.store import ChildRow
 from actions.onboard.bill_payer_writes import LinkResult, StageResult
 from actions.onboard_dry_run import bill_payers as payers_mod
 from actions.onboard_dry_run.links import DealContact
@@ -51,15 +52,12 @@ class FakeFamly:
         self.children, self.settle_error = list(children), settle_error
         self.contacts = {}                       # hubspot id -> famly contact id
 
-    script = None                                # optional: call number -> list (or raises) for the URN lookup
+    script = None                                # optional: call number -> list (or raises) for the roster scan
     calls = 0
     created = False
 
     def children_by_urn(self, urn):
-        self.calls += 1
-        if self.script:
-            return self.script(self.calls)
-        return list(self.children)
+        raise AssertionError("FamlyReads.children_by_urn memoises its roster: the create path must scan a fresh roster")
 
     def children_by_deal_id(self, deal_id):
         raise AssertionError("an ad hoc child carries no deal reference: nothing may look it up by one")
@@ -70,6 +68,25 @@ class FakeFamly:
         return SimpleNamespace(ids=[self.contacts[hid]] if hid in self.contacts else [])
 
 
+class FakeDealWriter:
+    """Stands in for deal_writeback.DealWriter; records calls and their order (shared `events`)."""
+
+    def __init__(self, events, urn_fail=False, childid_code=deal_writeback.CHILDID_WRITTEN):
+        self.events, self.urn_fail, self.childid_code, self.calls = events, urn_fail, childid_code, []
+
+    def ensure_urn(self, deal_id, urn):
+        self.calls.append(("urn", deal_id, urn))
+        self.events.append("hubspot:urn")
+        if self.urn_fail:
+            raise deal_writeback.WritebackFailed(deal_writeback.URN_WRITE_FAILED)
+        return "written"
+
+    def ensure_child_id(self, deal_id, child_id):
+        self.calls.append(("child_id", deal_id, child_id))
+        self.events.append("hubspot:child_id")
+        return self.childid_code
+
+
 class NewChildCase(Case):
     def setUp(self):
         super().setUp()
@@ -77,7 +94,12 @@ class NewChildCase(Case):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.famly, self.sent, self.fail_contacts = FakeFamly(), [], set()
+        self.events = []                                    # the order of Famly and HubSpot writes
+        self.deal_writer = FakeDealWriter(self.events)
         self.writes = FakeWrites()
+        roster = mock.patch("actions.urn_lookup.runner.fetch_roster", side_effect=self.fake_fetch_roster)
+        roster.start()
+        self.addCleanup(roster.stop)
         self.create_child_effect = None
         for target, side in (("create_child", self.fake_create_child), ("create_contact", self.fake_create_contact)):
             p = mock.patch.object(famly_writes, target, side_effect=side)
@@ -96,7 +118,14 @@ class NewChildCase(Case):
         self.link = link.start()
         self.addCleanup(link.stop)
 
+    def fake_fetch_roster(self, client=None):
+        """A FRESH roster scan each call: `famly.children` is whatever carries the URN right now."""
+        self.famly.calls += 1
+        ids = self.famly.script(self.famly.calls) if self.famly.script else list(self.famly.children)
+        return [ChildRow(id=i, external_id=URN) for i in ids]
+
     def fake_create_child(self, client, payload):
+        self.events.append("famly:child")
         self.sent.append(("child", payload))
         if self.create_child_effect == "rejected":
             raise famly_writes.CreateRejected("child_rejected")
@@ -116,7 +145,7 @@ class NewChildCase(Case):
 
     def deps(self, plans):
         d = super().deps(plans)
-        d.writes, d.public = self.writes, object()
+        d.writes, d.public, d.deal_writer = self.writes, object(), self.deal_writer
         d.famly_factory = lambda: self.famly
         d.deal_context = lambda deal_id: (deal(id=deal_id), contacts())
         d.sleep = lambda s: None
@@ -148,7 +177,8 @@ class WriteOrderTests(NewChildCase):
         self.assertEqual(booked[0][2], {**approved, "childId": "new-1"})            # approved payload, childId filled
         self.assertEqual([c[0] for c in self.writes.calls], ["book", "tag"])          # no end-date step
         self.assertEqual(self.run_stage.call_count, 1)
-        self.assertEqual(job.outcomes[:3], ["contact:h1:created", "contact:h2:created", "billpayer:bill_payer_created"])
+        self.assertEqual(job.outcomes[:4], ["hubspot:childid_written", "contact:h1:created", "contact:h2:created",
+                                            "billpayer:bill_payer_created"])
 
     def test_the_child_payload_has_no_last_day_and_carries_the_group_and_urn(self):
         self.go()
@@ -470,6 +500,162 @@ class UrnAllocatorTests(unittest.TestCase):
         self.assertEqual(urn_plan.urn_section(UrnService(bad, self.service._famly), "9", "HDCW", True),
                          {"status": "unavailable"})
 
+
+
+class WritebackAndRosterTests(NewChildCase):
+    """2026-11-25: the first live new-child job could not read its child back (a memoised roster), and Drew wants the
+    URN and the Famly child id on the HubSpot deal."""
+
+    def test_the_urn_goes_on_the_deal_before_the_create_and_the_child_id_after(self):
+        job, _ = self.go()
+        self.assertEqual(self.events[:3], ["hubspot:urn", "famly:child", "hubspot:child_id"])
+        self.assertEqual(self.deal_writer.calls, [("urn", "1", URN), ("child_id", "1", "new-1")])
+        self.assertEqual(job.status, store.DONE)
+
+    def test_a_failed_urn_write_stops_before_any_famly_request(self):
+        self.deal_writer = FakeDealWriter(self.events, urn_fail=True)
+        job, _ = self.go()
+        self.assertEqual((job.status, job.last_error_code), (store.NEEDS_REVIEW, "urn_hubspot_write_failed"))
+        self.assertEqual((self.sent, self.writes.calls, self.famly.calls), ([], [], 0))     # nothing sent, not even a scan
+
+    def test_a_failed_child_id_write_never_blocks_famly_the_booking_still_happens(self):
+        self.deal_writer = FakeDealWriter(self.events, childid_code=deal_writeback.CHILDID_WRITE_FAILED)
+        job, _ = self.go()
+        self.assertEqual([c[0] for c in self.writes.calls], ["book", "tag"])
+        self.assertEqual((job.status, job.last_error_code), (store.NEEDS_REVIEW, "hubspot_childid_write_failed"))
+        self.assertIn("hubspot_childid_write_failed", self.notifier.sent[-1]["text"])
+
+    def test_the_read_back_sees_a_child_created_after_the_first_scan(self):
+        # the regression: the pre-create scan finds nothing, the create adds the child, the read-back must find it
+        job, _ = self.go()
+        self.assertEqual((job.status, job.child_id), (store.DONE, "new-1"))
+        self.assertGreaterEqual(self.famly.calls, 2)                    # a fresh scan before AND after the create
+
+    def test_existing_children_scans_a_fresh_roster_on_every_call(self):
+        rosters = iter([[], [ChildRow(id="c9", external_id=URN)]])
+        with mock.patch("actions.urn_lookup.runner.fetch_roster", side_effect=lambda client=None: next(rosters)):
+            self.assertEqual(new_child.existing_children(object(), URN), [])
+            self.assertEqual(new_child.existing_children(object(), URN), ["c9"])
+
+
+class ResumeContactsTests(NewChildCase):
+    """A child an earlier job made but never reached the contacts for: a fresh job creates them (lookup first)."""
+
+    def earlier_job(self, outcomes=None):
+        job = store.enqueue("1", "live").job
+        store.mark_child_create_sent(job.id)
+        store.update(job.id, child_id="c-old", outcomes=outcomes)
+        store.set_status(job.id, store.NEEDS_REVIEW, last_error_code="readback_child_lookup_failed")
+
+    def resume_plan(self):
+        p = new_plan()
+        p["match"] = {"via": "allocated_urn", "childIds": ["c-old"]}
+        p["resumeContacts"] = True
+        p["purchase"]["childId"] = "c-old"
+        p["steps"] = ["create_contacts", "assign_ad_hoc_only_tag", "remove_end_date_if_set", "book_1_sessions"]
+        return p
+
+    def test_contacts_are_created_for_the_existing_child_booked_and_the_child_id_recorded(self):
+        self.earlier_job(outcomes=None)
+        job, _ = self.go(self.resume_plan())
+        self.assertEqual(self.kinds(), ["contact", "contact"])               # no second child
+        self.assertEqual([c[0] for c in self.writes.calls], ["book", "tag", "end"])
+        self.assertEqual(self.deal_writer.calls, [("child_id", "1", "c-old")])    # URN already on the deal
+        self.assertEqual((job.status, job.child_id), (store.DONE, "c-old"))
+
+    def test_a_parent_already_on_the_child_is_looked_up_first_and_not_created_again(self):
+        self.earlier_job(outcomes=["hubspot:childid_written"])               # stopped before any contact outcome
+        self.famly.contacts["h1"] = "fc-existing"                            # the bill payer is already there
+        job, _ = self.go(self.resume_plan())
+        self.assertEqual([p["externalSystemsReferences"][0]["foreignId"] for k, p in self.sent if k == "contact"], ["h2"])
+        self.assertIn("contact:h1:present", job.outcomes)
+
+    def test_no_resume_when_the_earlier_job_recorded_contact_outcomes(self):
+        from actions.adhoc_plan import readers
+        self.earlier_job(outcomes=["contact:h1:created", "contact:h2:readback_failed"])
+        self.assertFalse(readers.resume_contacts_for_deal("1", "c-old"))
+        self.assertFalse(readers.resume_contacts_for_deal("1", "another-child"))
+        self.assertFalse(readers.resume_contacts_for_deal("2", "c-old"))
+
+    def test_resume_is_detected_for_a_child_with_no_contact_outcomes(self):
+        from actions.adhoc_plan import readers
+        self.earlier_job(outcomes=None)
+        self.assertTrue(readers.resume_contacts_for_deal("1", "c-old"))
+
+    def test_changed_contacts_since_approval_write_nothing_on_a_resume(self):
+        self.earlier_job()
+        p = self.resume_plan()
+        p["contacts"] = p["contacts"][:1]                                    # the plan had one contact, the deal has two
+        job, _ = self.go(p)
+        self.assertEqual((job.status, job.last_error_code, self.sent, self.writes.calls),
+                         (store.NEEDS_REVIEW, "plan_changed", [], []))
+
+    def test_a_resume_is_rechecked_at_write_time_and_stops_if_contacts_were_recorded_since(self):
+        self.earlier_job(outcomes=["contact:h1:created"])             # recorded after the plan was approved
+        job, _ = self.go(self.resume_plan())
+        self.assertEqual((job.status, job.last_error_code, self.sent, self.writes.calls),
+                         (store.NEEDS_REVIEW, "plan_changed", [], []))
+
+    def test_the_gate_message_says_contacts_will_be_created_for_the_existing_child(self):
+        self.earlier_job()
+        self.go(self.resume_plan())
+        gate = next(m for m in self.notifier.sent if m["kind"] == "gate")
+        self.assertIn("Parent contacts: 2 to be created for this child", gate["text"])
+
+
+class DealWriterTests(unittest.TestCase):
+    """deal_writeback.DealWriter: only two properties, never overwrites, always confirmed."""
+
+    class Client:
+        def __init__(self, props=None, fail_write=False, swallow=False, fail_read=False):
+            self.props, self.fail_write, self.swallow, self.fail_read, self.writes = dict(props or {}), fail_write, swallow, fail_read, []
+
+        def get_deal(self, deal_id):
+            if self.fail_read:
+                raise deal_writeback.HubSpotError("down")
+            return dict(self.props)
+
+        def write_deal_properties(self, deal_id, properties):
+            self.writes.append(dict(properties))
+            if self.fail_write:
+                raise deal_writeback.HubSpotError("boom")
+            if not self.swallow:
+                self.props.update(properties)
+
+    def test_urn_is_written_when_empty_confirmed_and_left_alone_when_equal(self):
+        c = self.Client()
+        self.assertEqual(deal_writeback.DealWriter(c).ensure_urn("1", URN), "written")
+        self.assertEqual(c.writes, [{"child_urn": URN}])
+        self.assertEqual(deal_writeback.DealWriter(c).ensure_urn("1", URN.lower()), "present")   # no second write
+        self.assertEqual(len(c.writes), 1)
+
+    def test_a_different_urn_is_never_overwritten_and_an_unconfirmed_write_fails(self):
+        for client in (self.Client({"child_urn": "HD0001WM"}), self.Client(swallow=True), self.Client(fail_read=True)):
+            with self.assertRaises(deal_writeback.WritebackFailed) as caught:
+                deal_writeback.DealWriter(client).ensure_urn("1", URN)
+            self.assertEqual(caught.exception.code, "urn_hubspot_write_failed")
+        self.assertEqual(self.Client({"child_urn": "HD0001WM"}).writes, [])
+        with self.assertRaises(deal_writeback.WritebackFailed):
+            deal_writeback.DealWriter(self.Client()).ensure_urn("1", "")
+
+    def test_a_write_that_errors_but_landed_counts_as_written(self):
+        class Lands(self.Client):
+            def write_deal_properties(self, deal_id, properties):
+                self.props.update(properties)
+                raise deal_writeback.HubSpotError("5xx after it ran")
+        self.assertEqual(deal_writeback.DealWriter(Lands()).ensure_urn("1", URN), "written")
+        self.assertEqual(deal_writeback.DealWriter(self.Client(fail_write=True)).ensure_child_id("1", "c1"),
+                         deal_writeback.CHILDID_WRITE_FAILED)
+
+    def test_child_id_codes_and_the_two_property_guard(self):
+        c = self.Client()
+        self.assertEqual(deal_writeback.DealWriter(c).ensure_child_id("1", "c1"), deal_writeback.CHILDID_WRITTEN)
+        self.assertEqual(deal_writeback.DealWriter(c).ensure_child_id("1", "c1"), deal_writeback.CHILDID_PRESENT)
+        self.assertEqual(deal_writeback.DealWriter(c).ensure_child_id("1", "c2"), deal_writeback.CHILDID_WRITE_FAILED)  # never overwrites
+        self.assertEqual(c.props["famly_childid"], "c1")
+        self.assertEqual(deal_writeback.ALLOWED, {"child_urn", "famly_childid"})
+        with self.assertRaises(AssertionError):
+            deal_writeback.DealWriter(c)._ensure("1", "end_date", "2026-01-01", lambda a, b: a == b)
 
 if __name__ == "__main__":
     unittest.main()
