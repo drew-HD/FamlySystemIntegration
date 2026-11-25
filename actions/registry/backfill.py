@@ -1,0 +1,248 @@
+"""registry-backfill: fill the children registry from Famly and HubSpot. READ-ONLY against both.
+
+Sources:
+  1. Famly, every child at every site, past and future (onboard_audit.fetch_children): id, name, date of
+     birth, URN (externalId), HUBSPOT deal references and parent emails. Every Famly child gets a row, so
+     the registry catches everyone.
+  2. HubSpot, every deal in the Operations and Ad Hoc pipelines: the deal kind, plus its `famly_childid`
+     and `child_urn`.
+  3. The local job stores, opened read-only: done onboarding and ad hoc jobs (deal -> child) and the URN
+     allocations (deal -> URN -> child).
+
+A deal is linked when every source agrees on ONE child. A deal that points at several children, or a URN
+that is on several children, is a conflict: reported, never written. Dry run by default; `confirm=True`
+writes. Output is counts and codes; the CSV holds ids and codes only.
+"""
+
+import csv
+import logging
+import sqlite3
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import store
+
+logger = logging.getLogger(__name__)
+
+# Codes (ids only in the report).
+DEAL_SEVERAL_CHILDREN = "deal_points_at_several_children"
+URN_SEVERAL_CHILDREN = "urn_on_several_children"
+DEAL_NO_CHILD = "deal_no_child_found"
+REFERENCE_UNKNOWN_DEAL = "reference_not_operations_or_adhoc"
+STORE_CONFLICT = "already_tied_to_another_child"
+CHILD_NO_DOB = "child_without_dob"
+RECORDED_CHILD_MISSING = "recorded_child_not_in_famly"
+
+
+@dataclass
+class Report:
+    rows: list = field(default_factory=list)             # (code, child_id, deal_id)
+    counts: Counter = field(default_factory=Counter)
+
+    def add(self, code: str, child_id: str = "", deal_id: str = "") -> None:
+        self.rows.append((code, child_id, deal_id))
+        self.counts[code] += 1
+
+
+def _read_local(path: Path, sql: str) -> list[tuple]:
+    """Rows from another store, opened READ-ONLY. Missing file or table -> no rows."""
+    if not path.exists():
+        return []
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+    except sqlite3.Error:
+        return []
+    try:
+        return [tuple(r) for r in connection.execute(sql)]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        connection.close()
+
+
+def local_links() -> dict:
+    """deal -> child from done jobs, and deal -> URN from the allocations, out of the local stores."""
+    from actions.adhoc import store as adhoc_store
+    from actions.onboard import store as onboard_store
+    from actions.onboard_dry_run import urn as urn_fmt
+
+    adhoc = _read_local(adhoc_store.store_path(),
+                        "SELECT deal_id, child_id FROM adhoc_jobs WHERE status = 'done' AND child_id IS NOT NULL")
+    onboard = _read_local(onboard_store.store_path(),
+                          "SELECT deal_id, child_id FROM onboard_jobs WHERE status = 'done' AND child_id IS NOT NULL")
+    allocations = []
+    for deal_id, suffix, number in _read_local(onboard_store.store_path(),
+                                               "SELECT deal_id, site_code, number FROM onboard_urn_allocations"):
+        try:
+            allocations.append((str(deal_id), urn_fmt.format_urn(suffix, int(number))))
+        except (TypeError, ValueError):
+            continue
+    return {"adhoc_jobs": [(str(d), str(c)) for d, c in adhoc],
+            "onboard_jobs": [(str(d), str(c)) for d, c in onboard],
+            "urn_allocations": allocations}
+
+
+def _site_codes() -> dict:
+    """Famly institution id -> site code, from reference/catalogue.json."""
+    from integrations import catalogue
+    return {entry["institutionId"]: code for code, entry in catalogue.load_sites().items()
+            if isinstance(entry, dict) and entry.get("institutionId")}
+
+
+def _site_code(child, site_codes: dict) -> str | None:
+    relations = sorted((r for r in child.relations if r and r[0]), key=lambda r: r[1] or "")
+    return site_codes.get(relations[-1][0]) if relations else None
+
+
+def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict], links: dict,
+          site_codes: dict) -> tuple[dict, Report]:
+    """Work out what to write, without writing. Returns ({"children": [...], "deals": [(deal, child,
+    kind)]}, report)."""
+    report = Report()
+    kinds = {str(d["id"]): store.OPERATIONS for d in operations_deals}
+    kinds.update({str(d["id"]): store.ADHOC for d in adhoc_deals})
+
+    by_urn: dict[str, list[str]] = {}
+    for child in children.values():
+        if child.external_id:
+            by_urn.setdefault(child.external_id.casefold(), []).append(child.id)
+
+    def urn_children(urn: str) -> list[str]:
+        return by_urn.get(str(urn or "").strip().casefold(), []) if urn else []
+
+    candidates: dict[str, set] = {}
+    broken: set = set()          # a source names a child that is not in Famly: the deal is not linked
+
+    def offer(deal_id: str, child_id: str) -> None:
+        if not deal_id or not child_id:
+            return
+        if child_id not in children:
+            if deal_id not in broken:
+                report.add(RECORDED_CHILD_MISSING, "", deal_id)
+            broken.add(deal_id)
+            return
+        candidates.setdefault(deal_id, set()).add(child_id)
+
+    rows = []
+    for child in children.values():
+        if not child.birthday:
+            report.add(CHILD_NO_DOB, child.id)
+        if child.external_id and len(urn_children(child.external_id)) > 1:
+            report.add(URN_SEVERAL_CHILDREN, child.id)
+        rows.append(child)
+        for system, foreign in child.references:
+            if system != "HUBSPOT" or not foreign:
+                continue
+            if foreign in kinds:
+                offer(foreign, child.id)
+            else:
+                report.add(REFERENCE_UNKNOWN_DEAL, child.id, foreign)
+
+    for deal in operations_deals + adhoc_deals:
+        deal_id = str(deal["id"])
+        recorded = str(deal.get("famly_childid") or "").strip()
+        if recorded:
+            offer(deal_id, recorded)
+        found = urn_children(str(deal.get("child_urn") or "").strip())
+        if len(found) == 1:
+            offer(deal_id, found[0])
+    for deal_id, child_id in links.get("adhoc_jobs", []):
+        offer(deal_id, child_id)
+        kinds.setdefault(deal_id, store.ADHOC)
+    for deal_id, child_id in links.get("onboard_jobs", []):
+        offer(deal_id, child_id)
+        kinds.setdefault(deal_id, store.OPERATIONS)
+    for deal_id, urn in links.get("urn_allocations", []):
+        found = urn_children(urn)
+        if len(found) == 1 and deal_id in kinds:
+            offer(deal_id, found[0])
+
+    deals = []
+    for deal_id, kind in sorted(kinds.items()):
+        ids = sorted(candidates.get(deal_id, ()))
+        if deal_id in broken:
+            continue
+        if len(ids) == 1:
+            deals.append((deal_id, ids[0], kind))
+        elif ids:
+            for child_id in ids:
+                report.add(DEAL_SEVERAL_CHILDREN, child_id, deal_id)
+        else:
+            report.add(DEAL_NO_CHILD, "", deal_id)
+            report.counts[f"{DEAL_NO_CHILD}:{kind}"] += 1
+    shared_urns = {urn for urn, ids in by_urn.items() if len(ids) > 1}
+    return {"children": rows, "deals": deals, "site_codes": site_codes, "shared_urns": shared_urns}, report
+
+
+def write(plan: dict, report: Report) -> Counter:
+    """Write the plan to the registry. A URN or deal already tied to another child is reported, not changed."""
+    written = Counter()
+    for child in plan["children"]:
+        if store.upsert_child(child.id, child.full_name, child.birthday, _site_code(child, plan["site_codes"]),
+                              "backfill"):
+            written["children_added"] += 1
+        else:
+            written["children_refreshed"] += 1
+        if child.external_id and child.external_id.casefold() not in plan["shared_urns"]:
+            result = store.add_urn(child.id, child.external_id)
+            written[f"urn_{result}"] += 1
+            if result == store.CONFLICT:
+                report.add(STORE_CONFLICT, child.id)
+        for contact in child.contacts:
+            if contact.email:
+                store.add_email(child.id, contact.email)
+    for deal_id, child_id, kind in plan["deals"]:
+        result = store.add_deal(child_id, deal_id, kind)
+        written[f"deal_{result}"] += 1
+        if result == store.CONFLICT:
+            report.add(STORE_CONFLICT, child_id, deal_id)
+    return written
+
+
+def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = None, children=None,
+        links: dict | None = None, site_codes: dict | None = None) -> tuple[dict, Report]:
+    """The backfill. `children`, `links`, `site_codes` are for tests."""
+    from actions.adhoc_audit import runner as adhoc_audit
+    from actions.onboard_audit import runner as audit
+
+    if children is None:
+        if site_ids is None:
+            from actions.urn_lookup import runner as urn_runner
+            site_ids = urn_runner._all_institution_ids()
+        children = audit.fetch_children(gql, site_ids)
+    stages = hubspot.stage_names()
+    operations = audit.operations_deals(hubspot, stages, None)
+    adhoc = adhoc_audit.adhoc_deals(hubspot, stages)
+    links = local_links() if links is None else links
+    site_codes = _site_codes() if site_codes is None else site_codes
+
+    plan, report = build(children, operations, adhoc, links, site_codes)
+    kinds = Counter(kind for _, _, kind in plan["deals"])
+    summary = {
+        "mode": "confirm" if confirm else "dry_run",
+        "famly_children": len(plan["children"]),
+        "children_with_urn": sum(1 for c in plan["children"] if c.external_id),
+        "operations_deals": len(operations),
+        "adhoc_deals": len(adhoc),
+        "deals_to_link": dict(kinds),
+        "codes": dict(sorted(report.counts.items())),
+    }
+    if confirm:
+        summary["written"] = dict(sorted(write(plan, report).items()))
+        summary["codes"] = dict(sorted(report.counts.items()))
+        summary["registry"] = store.stats()
+    logger.info("registry backfill %s: %s children, %s deals linked", summary["mode"],
+                summary["famly_children"], sum(kinds.values()))
+    return summary, report
+
+
+def write_csv(path: str, report: Report) -> int:
+    """Ids and codes only."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["code", "famly_child_id", "deal_id"])
+        writer.writerows(report.rows)
+    return len(report.rows)
