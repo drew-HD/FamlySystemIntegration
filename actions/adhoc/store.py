@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS adhoc_jobs (
     candidate_child_id TEXT,
     match_decision TEXT,
     write_sent INTEGER NOT NULL DEFAULT 0,
-    outcomes TEXT
+    outcomes TEXT,
+    child_create_sent INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS adhoc_one_active_per_deal
     ON adhoc_jobs (deal_id) WHERE status IN ('queued', 'awaiting_approval', 'writing');
@@ -83,6 +84,7 @@ _ADDED_COLUMNS = (
     ("approval_nonce", "TEXT"), ("approved_hash", "TEXT"), ("approval_ref", "TEXT"),
     ("reask_count", "INTEGER NOT NULL DEFAULT 0"), ("question", "TEXT"), ("candidate_child_id", "TEXT"),
     ("match_decision", "TEXT"), ("write_sent", "INTEGER NOT NULL DEFAULT 0"), ("outcomes", "TEXT"),
+    ("child_create_sent", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 _UPDATABLE = {"mode", "plan_hash", "plan_json", "holds", "flags", "child_id", "last_error_code", "approval_nonce",
@@ -116,7 +118,8 @@ class Job:
     candidate_child_id: str | None = None  # the Famly child a "match" question offers
     match_decision: str | None = None      # "confirmed" (the candidate is the child) | "new" (create a new child)
     write_sent: bool = False               # 1 once the booking request has been SENT: a job never sends a second
-    outcomes: list | None = None           # codes of what the write phase did
+    outcomes: list | None = None           # codes of what the write phase did (contact:<id>:<code>, billpayer:<code>, ...)
+    child_create_sent: bool = False        # 1 once the NEW-child create request has been SENT: never sent twice
 
 
 def store_path() -> Path:
@@ -175,7 +178,8 @@ def _to_job(row: sqlite3.Row) -> Job:
         plan=_loads(row["plan_json"]), approval_nonce=row["approval_nonce"], approved_hash=row["approved_hash"],
         approval_ref=row["approval_ref"], reask_count=row["reask_count"], question=row["question"],
         candidate_child_id=row["candidate_child_id"], match_decision=row["match_decision"],
-        write_sent=bool(row["write_sent"]), outcomes=_loads(row["outcomes"]))
+        write_sent=bool(row["write_sent"]), outcomes=_loads(row["outcomes"]),
+        child_create_sent=bool(row["child_create_sent"]))
 
 
 # --------------------------------------------------------------------------- #
@@ -318,6 +322,25 @@ def mark_write_sent(job_id: str) -> bool:
         cursor = connection.execute(
             "UPDATE adhoc_jobs SET write_sent = 1, updated_at = ? WHERE id = ? AND write_sent = 0", (_now(), job_id))
     return cursor.rowcount == 1
+
+
+def mark_child_create_sent(job_id: str) -> bool:
+    """Persisted BEFORE the new-child create request is sent, atomically: True only for the one call that sets it."""
+    with _open() as connection:
+        cursor = connection.execute(
+            "UPDATE adhoc_jobs SET child_create_sent = 1, updated_at = ? WHERE id = ? AND child_create_sent = 0",
+            (_now(), job_id))
+    return cursor.rowcount == 1
+
+
+def earlier_creates_for_deal(deal_id: str, child_id: str, exclude_job_id: str) -> list[Job]:
+    """Earlier jobs of this deal that SENT a child create and recorded `child_id` (how a Retry knows the child it
+    finds is one this pipeline created)."""
+    with _open() as connection:
+        rows = connection.execute(
+            "SELECT * FROM adhoc_jobs WHERE deal_id = ? AND child_id = ? AND child_create_sent = 1 AND id != ?",
+            (str(deal_id), child_id, exclude_job_id)).fetchall()
+    return [_to_job(r) for r in rows]
 
 
 def consume_hold_nonce(job_id: str, nonce: str) -> bool:

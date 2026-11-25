@@ -377,16 +377,6 @@ class LiveWriteTests(Case):
         after = store.latest_for_deal("1")
         self.assertEqual((w.calls, after.status, after.last_error_code), ([], store.NEEDS_REVIEW, "duplicate_write_blocked"))
 
-    def test_a_new_child_is_held_in_live_mode_and_no_approval_is_asked(self):
-        w = FakeWrites()
-        store.enqueue("1", "live")
-        deps = self.deps(plan(child=()))
-        deps.writes = w
-        worker.run_once(deps)
-        job = store.latest_for_deal("1")
-        self.assertEqual((job.status, job.holds, w.calls), (store.HELD, [worker.NEW_CHILD_NOT_BUILT], []))
-        self.assertEqual(self.notifier.sent[-1]["kind"], "hold")
-
     def test_dry_mode_never_touches_the_writer(self):
         with mock.patch.dict(os.environ, {"ADHOC_MODE": "dry"}):
             store.enqueue("1", "dry")

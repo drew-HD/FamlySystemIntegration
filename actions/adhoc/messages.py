@@ -59,8 +59,29 @@ SENTENCES = {
     "price_not_a_number": "A session price could not be read.",
     "price_not_positive": "A session price is zero or negative.",
     "deal_not_found": "The deal could not be read from HubSpot.",
-    "new_child_not_built": "This deal needs a NEW child in Famly, and creating children from here is not switched on "
-                           "yet. Create the child in Famly (or fix the match), then press Retry.",
+    "group_missing": "No Famly room (group) is set up for this child's age at the first booked date.",
+    "contacts_not_readable": "The deal's contacts could not be read from HubSpot.",
+    "bill_payer_missing": "The deal needs exactly one contact marked as the Bill Payer.",
+    "contact_email_missing": "A contact on the deal has no email address.",
+    "contact_name_incomplete": "A contact on the deal has no first or last name.",
+    "dates_inconsistent": "The child's date of birth is after the first booked date.",
+    "urn_generation_off": "Child URN generation is switched off (ONBOARD_URN_GENERATION), so a new child cannot get a URN.",
+    "urn_site_unknown": "There is no URN site code for this site.",
+    "urn_not_available": "A URN could not be allocated (a read failed or the sequence is exhausted).",
+    "plan_changed": "The Famly child (or the deal's contacts) changed after approval, so nothing was written. "
+                    "Check the deal and Famly, then try again.",
+    "child_lookup_failed": "Famly could not be read just before creating the child, so nothing was created.",
+    "child_outcome_unknown": "The child create did not get a clear answer and no child was found. Check Famly. "
+                             "It was NOT sent again.",
+    "child_ambiguous": "More than one Famly child carries this deal's reference. Check Famly.",
+    "urn_missing": "No URN was allocated for this deal, so no child was created.",
+    "readback_child_lookup_failed": "The child was created but could not be found again by its URN. "
+                                    "Check Famly. Nothing else was written.",
+    "duplicate_create_blocked": "This job had already sent its child create, so it was not sent again.",
+    "deal_not_readable": "The deal or its contacts could not be read, so nothing was written.",
+    "contacts_missing": "The child was created by an earlier attempt and its parent contacts may be missing. "
+                        "Check the child's contacts in Famly.",
+    "contact": "A parent contact was not created cleanly (HubSpot contact id and code shown). Check Famly.",
     "booking_rejected": "Famly refused the booking. Nothing was booked.",
     "purchase_not_for_this_child": "The booking did not match the child. Nothing was booked.",
     "booking_outcome_unknown": "The booking request did not get a clear answer, so it may or may not have gone in. "
@@ -99,6 +120,7 @@ def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_n
         lines.append(f"Child exists in Famly: {child_name or 'name not available'} (Famly Id: {match['childIds'][0]})")
     else:
         lines.append("Child doesn't exist in Famly, to be created")
+        lines += _new_child_lines(plan)
     lines.append("Ad hoc only child" if plan["adHocOnly"] else "Standard child booking ad hoc")
     for number, b in enumerate(plan["bookings"], 1):
         lines.append(f"{number}. {long_date(b['date'])} {b['session']} {_money(b['price'])}")
@@ -114,6 +136,27 @@ def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_n
     lines.append(f"Steps: {', '.join(plan['steps'])}")
     lines.append(f"Plan: `{digest[:16]}`")
     return "\n".join(lines)
+
+
+PAYER_WORDS = {"would_create": "a new bill payer will be created", "would_attach": "the child will be linked to the "
+               "existing bill payer", "present": "the child is already linked to the bill payer",
+               "flagged": "needs a person (the bill payer step will not write)"}
+
+
+def _new_child_lines(plan: dict) -> list[str]:
+    """What the new child will be created with. Counts and codes only: NO contact names."""
+    if "firstDay" not in plan:
+        return []
+    contacts = plan.get("contacts") or []
+    lines = [f"Group: {plan.get('groupTitle') or 'unknown'} · Start date: {long_date(plan['firstDay'])} · no end date",
+             f"Contacts to create: {len(contacts)} (bill payer first, {sum(1 for c in contacts if c['isBillPayer'])} marked)"]
+    if plan.get("billPayer"):
+        decision = plan["billPayer"]
+        lines.append("Bill payer: " + PAYER_WORDS.get(decision.get("status"), str(decision.get("status")))
+                     + (f" ({decision['flag']})" if decision.get("flag") else ""))
+    urn = plan.get("urn") or {}
+    lines.append(f"URN: {urn['urn']}" if urn.get("urn") else "URN: will be assigned when approved")
+    return lines
 
 
 def match_text(plan: dict, famly_name: str, child_id: str, mode: str) -> str:
@@ -159,7 +202,8 @@ def hold_text(deal_id: str, codes, mode: str, details=None) -> str:
                       "Fix it in HubSpot or Famly, then press Retry.", f"Codes: {', '.join(codes)}"])
 
 
-def done_text(plan: dict, booked_ids: list, outcomes: dict, problems: list, mode: str) -> str:
+def done_text(plan: dict, booked_ids: list, outcomes: dict, problems: list, mode: str,
+              child_id: str | None = None) -> str:
     """The after-writing notice: counts, money and codes. No names."""
     n = len(plan["bookings"])
     head = "✅ Ad hoc done" if not problems else "⚠️ Ad hoc done with problems"
@@ -167,6 +211,8 @@ def done_text(plan: dict, booked_ids: list, outcomes: dict, problems: list, mode
              f"(total {_money(plan['total'])}"
              + (f", discount -{_money(plan['discountAmount'])}, to pay {_money(plan['totalAfterDiscount'])}"
                 if plan["discountAmount"] != "0.00" else "") + ")."]
+    if child_id:
+        lines.append(f"New child created in Famly (Famly Id: {child_id}), with its contacts and bill payer.")
     if "tag" in outcomes:
         lines.append(f"Ad Hoc Only tag: {outcomes['tag'].replace('tag_', '').replace('_', ' ')}. "
                      f"End date: {outcomes['end'].replace('end_date_', '').replace('_', ' ')}.")

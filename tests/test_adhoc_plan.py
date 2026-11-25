@@ -1,6 +1,7 @@
 """adhoc-dry-run planner: matching, ad hoc only, holds, pricing by age. Fake data only; reads only."""
 
 import unittest
+from unittest import mock
 from datetime import date
 
 from actions.adhoc_plan import planner
@@ -92,6 +93,40 @@ class SlackAnswerTests(Case):
     def deps(self):
         return planner.Deps(has_plan=lambda c: False, read_sessions=lambda c, d: LOOKUP,
                             preview=lambda c, p, d: {}, price_child_for_site=lambda s: "t")
+
+
+class AllocatedUrnTests(Case):
+    """An ad hoc child carries no deal reference; a Retry finds a child an earlier job made by the deal's allocated URN."""
+
+    def planned(self, children, allocated, contacts=()):
+        deps = planner.Deps(has_plan=lambda c: False, read_sessions=lambda c, d: LOOKUP, preview=lambda c, p, d: {},
+                            price_child_for_site=lambda s: "t", allocated_urn=allocated)
+        return planner.build_plan(deal(), "Approved", list(contacts), Index({c.id: c for c in children}), deps, TODAY)
+
+    def test_the_child_with_the_allocated_urn_is_found(self):
+        made = kid("made", emails=())
+        made.external_id = "HD0042CW"
+        plan = self.planned([made], lambda deal_id: "HD0042CW")
+        self.assertEqual((plan["match"]["via"], plan["match"]["childIds"]), ("allocated_urn", ["made"]))
+
+    def test_no_allocation_or_an_urn_nobody_carries_means_no_match(self):
+        other = kid("other", emails=(), name="Someone Else", birthday="2020-01-01")
+        other.external_id = "HD0001CW"
+        for allocated in (lambda deal_id: None, lambda deal_id: "HD0042CW"):
+            plan = self.planned([other], allocated)
+            self.assertEqual((plan["match"]["via"], plan["match"]["childIds"]), ("none", []))
+
+    def test_the_reader_builds_the_urn_from_the_onboard_store_exactly_as_the_allocator_does(self):
+        from actions.adhoc_plan import readers
+        from actions.onboard.urn_alloc import UrnService
+        from actions.onboard_dry_run import urn as urn_fmt
+        suffix = urn_fmt.site_suffix("HDCW")                       # the store holds the SUFFIX ("CW"), not the site code
+        self.assertEqual(suffix, "CW")
+        with mock.patch("actions.onboard.store.urn_allocation_for_deal", return_value=(suffix, 42)):
+            self.assertEqual(readers.allocated_urn_for_deal("1"), "HD0042CW")
+            self.assertEqual(readers.allocated_urn_for_deal("1"), UrnService(None, None).own("1"))   # same as `own`
+        with mock.patch("actions.onboard.store.urn_allocation_for_deal", return_value=None):
+            self.assertIsNone(readers.allocated_urn_for_deal("1"))
 
 
 class WhoAndStepsTests(Case):

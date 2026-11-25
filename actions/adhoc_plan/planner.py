@@ -26,7 +26,7 @@ from typing import Any, Callable
 from actions.adhoc_audit import runner as adhoc
 from actions.adhoc_probe import writer
 from actions.onboard_audit import runner as audit
-from actions.onboard_dry_run import derive
+from actions.onboard_dry_run import bill_payers, derive
 from core import hubspot as hubspot_cfg
 
 GO_STAGE = "approved"
@@ -43,6 +43,12 @@ class Deps:
     read_sessions: Callable[[str, date], dict]            # child id, valid-on date -> sessions lookup body
     preview: Callable[[str, list, date], dict]            # child id, purchases, date -> previewUpdate result
     price_child_for_site: Callable[[str], str | None]     # site code -> a child id to price a NEW child with
+    # Step 3b (a NEW child). Both optional: without `urn` the plan has no new-child section (older callers, tests).
+    urn: Callable[[str, str], dict] | None = None         # deal id, site code -> the URN section (urn_plan.urn_section)
+    bill_payers: Callable[[str], list | None] | None = None   # site id -> the site's live bill payers (None = scan failed)
+    # deal id -> the URN already allocated to this deal (onboard store), or None. A child an earlier job created for this
+    # deal carries no deal reference, so a Retry finds it by this URN.
+    allocated_urn: Callable[[str], str | None] | None = None
 
 
 def _tokens(*parts) -> frozenset:
@@ -70,12 +76,18 @@ def agrees(child, tokens: frozenset, dob: date | None) -> bool:
     return all(checks) if checks else True
 
 
-def match_child(deal: dict, deal_id: str, contacts, index) -> tuple[str, list[str], list[str]]:
-    """(how, child ids, extra holds/flags). how: deal_reference | famly_childid | urn | parent_email |
-    name_dob | none."""
+def match_child(deal: dict, deal_id: str, contacts, index,
+                allocated_urn: str | None = None) -> tuple[str, list[str], list[str]]:
+    """(how, child ids, extra holds/flags). how: deal_reference | famly_childid | urn | allocated_urn | parent_email |
+    name_dob | none. `allocated_urn` is the URN already reserved for this deal: a child an earlier ad hoc job created
+    for it carries that URN and no deal reference."""
     via, ids = index.find(deal, deal_id)
     if ids:
         return via, ids, []
+    if allocated_urn:
+        ids = list(dict.fromkeys(index.by_urn.get(str(allocated_urn).casefold(), [])))
+        if ids:
+            return "allocated_urn", ids, []
     tokens, dob = deal_child_tokens(deal), deal_dob(deal)
     candidates = adhoc.email_candidates(contacts, index) if contacts else []
     kept = [c for c in candidates if agrees(index.children[c], tokens, dob)]
@@ -189,7 +201,8 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     if confirmed_child_id and confirmed_child_id in index.children:
         how, ids, extra = "slack_confirmed", [confirmed_child_id], []
     else:
-        how, ids, extra = match_child(deal, deal_id, contacts, index)
+        allocated = deps.allocated_urn(deal_id) if deps.allocated_urn else None
+        how, ids, extra = match_child(deal, deal_id, contacts, index, allocated)
         if force_new and not ids:
             extra = [e for e in extra if e != "HOLD:parent_email_matches_a_different_child"]
             flags.append("new_child_confirmed_in_slack")
@@ -265,6 +278,9 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     elif sessions and not lookup_child:
         holds.append("price_lookup_unavailable")
 
+    if child is None and deps.urn is not None and sessions:
+        _new_child_section(plan, deal, deal_id, contacts, deps, sessions[0][0], birthday)
+
     # ----- the steps a real run would take --------------------------------------------------------------------
     if child is None:
         plan["steps"] += ["create_child_no_end_date", "create_contacts"]
@@ -275,6 +291,48 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     if plan["bookings"]:
         plan["steps"].append(f"book_{len(plan['bookings'])}_sessions")
     return plan
+
+
+def _new_child_section(plan: dict, deal: dict, deal_id: str, contacts, deps: Deps, first_day: date,
+                       birthday: date | None) -> None:
+    """What a NEW child needs (step 3b): first day, group by age at the first BOOKED day, the contacts (ids and flags
+    only), the bill payer decision and the URN. Anything missing is a HOLD; nothing is guessed."""
+    holds = plan["holds"]
+    plan["firstDay"] = first_day.isoformat()
+    if birthday is not None:
+        if birthday > first_day:
+            holds.append("dates_inconsistent")
+        else:
+            try:
+                title = derive.group_title_for_age(derive.completed_months(birthday, first_day))
+                plan["groupId"] = derive.group_id_for(plan["site"], title)
+                plan["groupTitle"] = title
+            except derive.Hold:
+                holds.append("group_missing")
+    if contacts is None:
+        holds.append("contacts_not_readable")
+    else:
+        plan["contacts"] = [{"hubspotContactId": str(c.hubspot_id), "isBillPayer": bool(c.is_bill_payer)}
+                            for c in sorted(contacts, key=lambda c: (not c.is_bill_payer, str(c.hubspot_id)))]
+        if sum(1 for c in contacts if c.is_bill_payer) != 1:
+            holds.append("bill_payer_missing")
+        if any(not str(c.email or "").strip() for c in contacts):
+            holds.append("contact_email_missing")
+        if any(not c.has_first_and_last_name for c in contacts):
+            holds.append("contact_name_incomplete")
+        if deps.bill_payers is not None and "bill_payer_missing" not in holds:
+            payers = deps.bill_payers(plan["siteId"])
+            decision = bill_payers.decide(contacts, payers, None)
+            plan["billPayer"] = decision.as_plan()
+            recipient = bill_payers.recipient_state(decision, payers, {"status": "would_create"})
+            if recipient:
+                plan["billPayer"]["recipient"] = recipient
+    if not holds:                                  # a number is reserved only for a plan with no hold
+        section = deps.urn(deal_id, plan["site"])
+        plan["urn"] = section
+        if section.get("status") not in ("allocated", "would_allocate"):
+            holds.append({"generation_off": "urn_generation_off", "site_unknown": "urn_site_unknown"}
+                         .get(section.get("status"), "urn_not_available"))
 
 
 def holds_block_pricing(holds: list[str]) -> bool:

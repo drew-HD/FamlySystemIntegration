@@ -11,10 +11,20 @@ from actions.adhoc_probe import runner as reads
 from actions.onboard_audit import runner as audit
 from actions.onboard_dry_run import derive, links
 
-from . import planner
+from . import planner, urn_plan
 
 NOT_AD_HOC = "not_ad_hoc_pipeline"
 DEAL_NOT_FOUND = "deal_not_found"
+
+
+def allocated_urn_for_deal(deal_id: str) -> str | None:
+    """The URN already reserved for this deal in the onboard store (read only), as a string, or None.
+
+    The store holds the URN SUFFIX ("CW"), not the site code, exactly as `UrnService.own` reads it."""
+    from actions.onboard import store as onboard_store
+    from actions.onboard_dry_run import urn as urn_fmt
+    held = onboard_store.urn_allocation_for_deal(str(deal_id))
+    return urn_fmt.format_urn(held[0], held[1]) if held else None
 
 
 class Readers:
@@ -57,10 +67,25 @@ class Readers:
                                                     "date": day.isoformat()})
             return (((body.get("data") or {}).get("finance") or {}).get("purchases") or {}).get("previewUpdate")
 
+        from actions.adhoc import config as adhoc_config
+        from actions.onboard.urn_alloc import UrnService
+        from actions.onboard_dry_run import bill_payers as payer_scan
+        from actions.onboard_dry_run.famly_reads import FamlyReads
+
+        famly = FamlyReads(self.public)                  # read-only wrapped; the roster is read once per plan
+        live = adhoc_config.mode() == adhoc_config.MODE_LIVE
         return planner.Deps(
             has_plan=lambda cid: bool(plans_runner.run(cid, client=self.rest).plans),
             read_sessions=read_sessions, preview=preview,
-            price_child_for_site=lambda site: self._test_children.get(site))
+            price_child_for_site=lambda site: self._test_children.get(site),
+            urn=lambda deal_id, site: urn_plan.urn_section(UrnService(self.hubspot, famly), deal_id, site, live),
+            bill_payers=famly.bill_payers if payer_scan.enabled() else None,
+            allocated_urn=allocated_urn_for_deal)
+
+    def deal_and_contacts(self, deal_id: str):
+        """The deal and contacts from the SAME read that produced the last plan for this deal (memory only), so the
+        write phase never builds a child from a second, possibly different, read. (None, None) if there was none."""
+        return getattr(self, "_context", {}).pop(str(deal_id), (None, None))
 
     def plan_deal(self, deal_id: str, index: audit.Index | None = None, confirmed_child_id: str | None = None,
                   force_new: bool = False) -> dict:
@@ -79,6 +104,7 @@ class Readers:
             contacts = links.deal_contacts(self.hubspot, self._labels, str(deal["id"]))
         except Exception:  # noqa: BLE001
             contacts = None
+        self._context = {**getattr(self, "_context", {}), str(deal_id): (deal, contacts)}
         plan = planner.build_plan(deal, stage or None, contacts, index or self.famly_index(), self.deps(),
                                   self.today or date.today(), confirmed_child_id=confirmed_child_id,
                                   force_new=force_new)
