@@ -224,13 +224,16 @@ class LiveTests(TempRegistry, Case):
     def test_the_similar_question_uses_the_registry_wording_and_names_stay_out_of_logs_and_jobs(self):
         p = plan(holds=["registry_similar_child"], child=(), candidates=["c1"])
         p["match"]["reason"] = "registry_similar"
-        with self.assertLogs(level=logging.DEBUG) as logs:
-            logging.getLogger("t").debug("start")
-            _result, job = self.run_job(p)
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logging.getLogger().addHandler(handler)
+        self.addCleanup(logging.getLogger().removeHandler, handler)
+        _result, job = self.run_job(p)
         self.assertEqual((job.status, self.notifier.sent[-1]["kind"]), (store.AWAITING_APPROVAL, "match"))
         self.assertIn("similar name", self.notifier.sent[-1]["text"])
         row = repr(store.get(job.id))
-        for text in (row, "\n".join(logs.output)):
+        for text in (row, "\n".join(r.getMessage() for r in records)):
             self.assertNotIn("Zed", text)
 
 
