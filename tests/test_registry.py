@@ -81,12 +81,21 @@ class MatchTests(unittest.TestCase):
         d = "2024-01-02"
         self.assertEqual(match.compare("Alpha Testchild", "testchild ALPHA", d, d), match.EXACT)
         self.assertEqual(match.compare("Zoë Smith-Jones", "Zoe Smith Jones", d, d), match.EXACT)
+        self.assertEqual(match.compare("Alpha Testchild", "Alpha Mae Testchild", d, d), match.EXACT)  # middle name
+        self.assertEqual(match.compare("Alpha Mae Testchild", "Alpha Joy Testchild", d, d), match.SIMILAR)
+        self.assertEqual(match.compare("Katherine Doe", "Katharine Doe", d, d), match.SIMILAR)  # spelling
         self.assertEqual(match.compare("Alpha Testchild", "Beta Testchild", d, d), match.SIMILAR)  # twins
-        self.assertEqual(match.compare("Alpha Testchild", "Alpha Mae Testchild", d, d), match.SIMILAR)
-        self.assertEqual(match.compare("Katherine Doe", "Katharine Dow", d, d), match.SIMILAR)  # spelling
+        self.assertEqual(match.compare("Alpha Testchild", "Alpha Other", d, d), match.NONE)  # first name only
+        self.assertEqual(match.compare("Alpha", "Alpha Testchild", d, d), match.NONE)
         self.assertEqual(match.compare("Alpha Testchild", "Alpha Testchild", d, "2024-01-03"), match.NONE)
-        self.assertEqual(match.compare("Alpha Testchild", "Gamma Other", d, d), match.NONE)
         self.assertEqual(match.compare("Alpha Testchild", "Alpha Testchild", "", ""), match.NONE)
+
+    def test_deal_child_name_prefers_full_name(self):
+        self.assertEqual(match.deal_child_name({"child_full_name": " Alpha  Mae Testchild ",
+                                                "child_first_name": "Alpha"}), "Alpha Mae Testchild")
+        self.assertEqual(match.deal_child_name({"child_first_name": "Alpha", "child_last_name": "Testchild"}),
+                         "Alpha Testchild")
+        self.assertEqual(match.deal_child_name({}), "")
 
 
 class BackfillTests(Base):

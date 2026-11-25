@@ -80,6 +80,11 @@ CHILD_NAME_PROPERTIES = tuple(
 DEAL_PROPERTIES = DEAL_PROPERTIES + tuple(
     p for p in CHILD_NAME_PROPERTIES if p not in DEAL_PROPERTIES
 )
+# The child's whole name as HubSpot often holds it (may include a middle name Famly leaves out). Read for the
+# children registry name match only; never printed or logged.
+CHILD_FULL_NAME_PROPERTY = "child_full_name"
+if CHILD_FULL_NAME_PROPERTY not in DEAL_PROPERTIES:
+    DEAL_PROPERTIES = DEAL_PROPERTIES + (CHILD_FULL_NAME_PROPERTY,)
 # The contact's email (to match it) plus the fields a Famly contact would be
 # built from. Values are read into memory only to derive booleans and codes;
 # the plan never carries them. The WhatsApp property name is HubSpot's standard
