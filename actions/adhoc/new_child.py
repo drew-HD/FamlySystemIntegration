@@ -77,19 +77,20 @@ def deal_matches_plan(deal: dict, plan: dict) -> bool:
         return False
 
 
-def existing_children(famly, deal_id: str, urn: str | None) -> list[str]:
-    """Famly children carrying the deal reference or the allocated URN (distinct ids)."""
-    ids = list(famly.children_by_deal_id(deal_id))
-    if urn:
-        ids += [c for c in famly.children_by_urn(urn) if c not in ids]
-    return ids
+def existing_children(famly, urn: str) -> list[str]:
+    """Famly children whose externalId is the URN allocated for this deal (distinct ids): a live roster scan."""
+    return list(dict.fromkeys(famly.children_by_urn(urn)))
 
 
 def ensure_child(job, public, famly, plan: dict, deal: dict, sleep: Callable) -> str:
-    """Create the child once and return its id (recorded on the job at once). Raises StopJob."""
+    """Create the child once and return its id (recorded on the job at once). Raises StopJob.
+
+    The URN allocated for the deal is the key for every lookup here (the child carries no deal reference)."""
     deal_id, urn = job.deal_id, (plan.get("urn") or {}).get("urn")
+    if not urn:
+        raise StopJob(store.NEEDS_REVIEW, "urn_missing")      # nothing was sent; a child is never created without it
     try:
-        found = existing_children(famly, deal_id, urn)       # the live lookup immediately before the write
+        found = existing_children(famly, urn)                # the live lookup immediately before the write
     except Exception as exc:  # noqa: BLE001
         logger.error("adhoc: pre-create lookup hit %s", type(exc).__name__)
         raise StopJob(store.NEEDS_REVIEW, "child_lookup_failed") from None
@@ -102,14 +103,14 @@ def ensure_child(job, public, famly, plan: dict, deal: dict, sleep: Callable) ->
     except (inputs.InputIncomplete, KeyError, ValueError) as exc:
         raise StopJob(store.FAILED, getattr(exc, "code", "child_input_incomplete")) from None
     assert "lastDay" not in payload["sitesRelation"][0]
+    assert all(ref["system"] != "HUBSPOT" for ref in payload["externalSystemsReferences"])
     if not store.mark_child_create_sent(job.id):             # persisted BEFORE the request: never a second create
         raise StopJob(store.NEEDS_REVIEW, "duplicate_create_blocked")
     try:
         child_id = famly_writes.create_child(public, payload)
     except (famly_writes.CreateRejected, famly_writes.OutcomeUnknown) as exc:
         rejected = exc.code if isinstance(exc, famly_writes.CreateRejected) else None
-        landed, readable = lookup_with_settle(
-            sleep, lambda: famly.children_by_deal_id(deal_id), label="settle")
+        landed, readable = lookup_with_settle(sleep, lambda: existing_children(famly, urn), label="settle")
         if len(landed) > 1:
             raise StopJob(store.NEEDS_REVIEW, "child_ambiguous") from None
         if not landed:
@@ -118,7 +119,7 @@ def ensure_child(job, public, famly, plan: dict, deal: dict, sleep: Callable) ->
             raise StopJob(store.NEEDS_REVIEW, "child_outcome_unknown") from None
         child_id = landed[0]
     store.update(job.id, child_id=child_id)                  # at once: a crash from here never replays the create
-    seen, readable = lookup_with_settle(sleep, lambda: famly.children_by_deal_id(deal_id), expect=child_id,
+    seen, readable = lookup_with_settle(sleep, lambda: existing_children(famly, urn), expect=child_id,
                                         label="readback")
     if not readable or seen != [child_id]:
         raise StopJob(store.NEEDS_REVIEW, "readback_child_lookup_failed")

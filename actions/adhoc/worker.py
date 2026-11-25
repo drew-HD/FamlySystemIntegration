@@ -314,7 +314,7 @@ def _write_phase(job, deps, plan, digest: str) -> None:
 
 
 def _contacts_missing(job, child_id: str) -> bool:
-    """A child that an EARLIER job of this deal created (a Retry found it by the deal reference): its contacts are not
+    """A child that an EARLIER job of this deal created (a Retry found it by the deal's allocated URN): its contacts are not
     created again; if that job did not record every contact as created or present, a person is told."""
     for earlier in store.earlier_creates_for_deal(job.deal_id, child_id, job.id):
         entries = [o for o in earlier.outcomes or [] if str(o).startswith("contact:")]

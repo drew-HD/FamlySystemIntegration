@@ -74,7 +74,8 @@ SENTENCES = {
     "child_outcome_unknown": "The child create did not get a clear answer and no child was found. Check Famly. "
                              "It was NOT sent again.",
     "child_ambiguous": "More than one Famly child carries this deal's reference. Check Famly.",
-    "readback_child_lookup_failed": "The child was created but could not be found again by the deal reference. "
+    "urn_missing": "No URN was allocated for this deal, so no child was created.",
+    "readback_child_lookup_failed": "The child was created but could not be found again by its URN. "
                                     "Check Famly. Nothing else was written.",
     "duplicate_create_blocked": "This job had already sent its child create, so it was not sent again.",
     "deal_not_readable": "The deal or its contacts could not be read, so nothing was written.",

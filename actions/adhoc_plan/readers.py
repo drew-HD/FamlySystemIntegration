@@ -17,6 +17,15 @@ NOT_AD_HOC = "not_ad_hoc_pipeline"
 DEAL_NOT_FOUND = "deal_not_found"
 
 
+def allocated_urn_for_deal(deal_id: str) -> str | None:
+    """The URN already reserved for this deal in the onboard store (read only), as a string, or None."""
+    from actions.onboard import store as onboard_store
+    from actions.onboard_dry_run import urn as urn_fmt
+    held = onboard_store.urn_allocation_for_deal(str(deal_id))
+    suffix = urn_fmt.site_suffix(held[0]) if held else None
+    return urn_fmt.format_urn(suffix, held[1]) if held and suffix else None
+
+
 class Readers:
     def __init__(self, today: date | None = None):
         from actions.urn_lookup import runner as urn_runner
@@ -69,7 +78,8 @@ class Readers:
             read_sessions=read_sessions, preview=preview,
             price_child_for_site=lambda site: self._test_children.get(site),
             urn=lambda deal_id, site: urn_plan.urn_section(UrnService(self.hubspot, famly), deal_id, site, live),
-            bill_payers=famly.bill_payers if payer_scan.enabled() else None)
+            bill_payers=famly.bill_payers if payer_scan.enabled() else None,
+            allocated_urn=allocated_urn_for_deal)
 
     def deal_and_contacts(self, deal_id: str):
         """The deal and contacts from the SAME read that produced the last plan for this deal (memory only), so the

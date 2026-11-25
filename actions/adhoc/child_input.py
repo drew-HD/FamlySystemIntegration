@@ -1,6 +1,8 @@
 """The ChildInput for a NEW ad hoc child. Same payload as actions/onboard/inputs.build_child_input but with NO
-`lastDay` (an ad hoc child has no end date), no `isTestChild`, and the URN allocated for the deal. Personal data is
-read from the in-memory deal, put in the payload and dropped; nothing here logs or stores a value."""
+`lastDay` (an ad hoc child has no end date), no `isTestChild`, NO HubSpot deal reference (Drew: an ad hoc child does not
+carry the deal id; if the family joins nursery, onboarding adds the Operations deal id as the first reference), and the
+URN allocated for the deal as its `externalId` + URN reference: the URN is the key every later lookup uses. Personal data
+is read from the in-memory deal, put in the payload and dropped; nothing here logs or stores a value."""
 
 from datetime import date
 
@@ -30,6 +32,5 @@ def build_adhoc_child_input(deal: dict, deal_id: str, site_id: str, group_id: st
         "sensitiveRecords": [],
         "sitesRelation": [{"siteId": site_id, "firstDay": first_day.strftime("%Y-%m-%d")}],   # NO lastDay
         "externalId": urn,
-        "externalSystemsReferences": [{"foreignId": str(deal_id), "system": "HUBSPOT"},
-                                      {"foreignId": urn, "system": "URN"}],
+        "externalSystemsReferences": [{"foreignId": urn, "system": "URN"}],        # NO HUBSPOT deal reference
     }

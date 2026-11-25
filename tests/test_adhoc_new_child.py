@@ -44,24 +44,26 @@ def new_plan():
 
 
 class FakeFamly:
-    """Famly reads. `children` is what the deal reference finds; a create adds the new child to it."""
+    """Famly reads. `children` is what the deal's allocated URN finds (an ad hoc child carries no deal reference);
+    a create adds the new child to it."""
 
-    def __init__(self, children=(), urn_hits=(), settle_error=False):
-        self.children, self.urn_hits, self.settle_error = list(children), list(urn_hits), settle_error
+    def __init__(self, children=(), settle_error=False):
+        self.children, self.settle_error = list(children), settle_error
         self.contacts = {}                       # hubspot id -> famly contact id
 
-    script = None                                # optional: call number -> list (or raises) for the deal reference
+    script = None                                # optional: call number -> list (or raises) for the URN lookup
     calls = 0
+    created = False
 
-    def children_by_deal_id(self, deal_id):
+    def children_by_urn(self, urn):
         self.calls += 1
         if self.script:
             return self.script(self.calls)
         return list(self.children)
 
-    created = False
+    def children_by_deal_id(self, deal_id):
+        raise AssertionError("an ad hoc child carries no deal reference: nothing may look it up by one")
 
-    def children_by_urn(self, urn): return list(self.urn_hits)
     def bill_payers(self, site_id): return []
 
     def locate_contact(self, child_id, hid, emails):
@@ -154,8 +156,7 @@ class WriteOrderTests(NewChildCase):
         self.assertEqual(payload["sitesRelation"], [{"siteId": "inst-cw", "firstDay": "2026-12-28"}])
         self.assertEqual((payload["currentGroupId"], payload["externalId"]), ("grp-1", URN))
         self.assertNotIn("isTestChild", payload)
-        self.assertEqual(payload["externalSystemsReferences"],
-                         [{"foreignId": "1", "system": "HUBSPOT"}, {"foreignId": URN, "system": "URN"}])
+        self.assertEqual(payload["externalSystemsReferences"], [{"foreignId": URN, "system": "URN"}])   # no HUBSPOT deal id
 
     def test_no_names_reach_slack_outcomes_or_logs(self):
         records = []
@@ -251,7 +252,7 @@ class SafetyTests(NewChildCase):
         self.assertEqual([c[0] for c in self.writes.calls], ["book", "tag"])
 
     def test_a_child_that_appears_before_the_write_stops_everything(self):
-        for found in ({"children": ["x"]}, {"urn_hits": ["y"]}):
+        for found in ({"children": ["x"]}, {"children": ["x", "y"]}):
             with self.subTest(found=found):
                 store._reset_for_tests()
                 self.sent.clear()
@@ -259,6 +260,19 @@ class SafetyTests(NewChildCase):
                 job, _ = self.go()
                 self.assertEqual((job.status, job.last_error_code), (store.NEEDS_REVIEW, "plan_changed"))
                 self.assertEqual((self.sent, self.writes.calls), ([], []))
+
+    def test_no_urn_in_the_plan_means_no_child_is_created(self):
+        plan = new_plan()
+        plan["urn"] = {"status": "allocated"}                       # a plan with no URN: never create without it
+        store.enqueue("1", "live")
+        deps = self.deps(plan)
+        deps.writes = self.writes
+        worker.run_once(deps)
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        worker.run_once(deps)
+        job = store.latest_for_deal("1")
+        self.assertEqual((job.status, job.last_error_code, self.sent, self.writes.calls),
+                         (store.NEEDS_REVIEW, "urn_missing", [], []))
 
     def test_a_dob_change_that_moves_the_group_creates_nothing(self):
         self.writes = FakeWrites()

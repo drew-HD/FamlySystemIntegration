@@ -46,6 +46,9 @@ class Deps:
     # Step 3b (a NEW child). Both optional: without `urn` the plan has no new-child section (older callers, tests).
     urn: Callable[[str, str], dict] | None = None         # deal id, site code -> the URN section (urn_plan.urn_section)
     bill_payers: Callable[[str], list | None] | None = None   # site id -> the site's live bill payers (None = scan failed)
+    # deal id -> the URN already allocated to this deal (onboard store), or None. A child an earlier job created for this
+    # deal carries no deal reference, so a Retry finds it by this URN.
+    allocated_urn: Callable[[str], str | None] | None = None
 
 
 def _tokens(*parts) -> frozenset:
@@ -73,12 +76,18 @@ def agrees(child, tokens: frozenset, dob: date | None) -> bool:
     return all(checks) if checks else True
 
 
-def match_child(deal: dict, deal_id: str, contacts, index) -> tuple[str, list[str], list[str]]:
-    """(how, child ids, extra holds/flags). how: deal_reference | famly_childid | urn | parent_email |
-    name_dob | none."""
+def match_child(deal: dict, deal_id: str, contacts, index,
+                allocated_urn: str | None = None) -> tuple[str, list[str], list[str]]:
+    """(how, child ids, extra holds/flags). how: deal_reference | famly_childid | urn | allocated_urn | parent_email |
+    name_dob | none. `allocated_urn` is the URN already reserved for this deal: a child an earlier ad hoc job created
+    for it carries that URN and no deal reference."""
     via, ids = index.find(deal, deal_id)
     if ids:
         return via, ids, []
+    if allocated_urn:
+        ids = list(dict.fromkeys(index.by_urn.get(str(allocated_urn).casefold(), [])))
+        if ids:
+            return "allocated_urn", ids, []
     tokens, dob = deal_child_tokens(deal), deal_dob(deal)
     candidates = adhoc.email_candidates(contacts, index) if contacts else []
     kept = [c for c in candidates if agrees(index.children[c], tokens, dob)]
@@ -192,7 +201,8 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     if confirmed_child_id and confirmed_child_id in index.children:
         how, ids, extra = "slack_confirmed", [confirmed_child_id], []
     else:
-        how, ids, extra = match_child(deal, deal_id, contacts, index)
+        allocated = deps.allocated_urn(deal_id) if deps.allocated_urn else None
+        how, ids, extra = match_child(deal, deal_id, contacts, index, allocated)
         if force_new and not ids:
             extra = [e for e in extra if e != "HOLD:parent_email_matches_a_different_child"]
             flags.append("new_child_confirmed_in_slack")
