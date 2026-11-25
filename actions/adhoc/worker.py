@@ -386,8 +386,8 @@ FOLLOWUP_FOR = {"failed": "registry_failed", "missing": "registry_failed", "conf
 
 def _registry_and_followup(job, deps, plan, child_id: str, new: bool, outcomes: list) -> list[str]:
     """After the booking (registry stages 2 and 3): record the ad hoc deal on the child in the registry, then tell
-    people what needs checking, in Slack (the returned lines) and in HubSpot (a note on the ad hoc deal and on each
-    operations deal, and the `famly_followup` dropdown on each operations deal). Nothing here stops the job or
+    people what needs checking, in Slack (the returned lines) and in HubSpot (the `famly_followup` dropdown on each
+    operations deal, only when something needs checking; no notes, Drew 2026-11-25). Nothing here stops the job or
     makes it `needs_review`: every failure is a line in Slack (Drew, 2026-11-25)."""
     if deps.registry is None:
         return []
@@ -403,39 +403,17 @@ def _registry_and_followup(job, deps, plan, child_id: str, new: bool, outcomes: 
     lines = messages.operations_lines(plan, name, booked=True) + [messages.REGISTRY_WORDS.get(code, code)]
 
     followup = FOLLOWUP_FOR.get(code) or ("no_famly_plan" if no_plan else None)
-    if (ops or followup) and deps.deal_writer is not None:
-        body = _note_body(job.deal_id, child_id, plan, ops, no_plan, code)
-        hubspot = [("ad hoc deal", job.deal_id, deps.deal_writer.add_note(job.deal_id, body))]
-        for deal_id in ops:
-            hubspot.append(("operations deal", deal_id, deps.deal_writer.add_note(deal_id, body)))
-            if followup:
-                hubspot.append(("famly_followup on", deal_id, deps.deal_writer.set_followup(deal_id, followup)))
-        outcomes += [f"hubspot:{result}:{deal_id}" for _what, deal_id, result in hubspot]
-        failed = [f"{what} {messages.deal_link(deal_id)}" for what, deal_id, result in hubspot
-                  if result.endswith("_failed")]
+    if ops and followup and deps.deal_writer is not None:
+        results = [(deal_id, deps.deal_writer.set_followup(deal_id, followup)) for deal_id in ops]
+        outcomes += [f"hubspot:{result}:{deal_id}" for deal_id, result in results]
+        failed = [messages.deal_link(deal_id) for deal_id, result in results if result.endswith("_failed")]
         if failed:
-            lines.append("⚠️ Needs checking: HubSpot could not be updated (" + "; ".join(failed) + ").")
-        elif followup and ops:
-            lines.append(f"HubSpot: note added and famly_followup set to {followup}.")
+            lines.append(f"⚠️ Needs checking: famly_followup could not be set to {followup} on operations deal "
+                         + ", ".join(failed) + ".")
         else:
-            lines.append("HubSpot: note added.")
+            lines.append(f"HubSpot: famly_followup set to {followup} on the operations deal.")
     store.update(job.id, outcomes=outcomes)
     return lines
-
-
-def _note_body(deal_id: str, child_id: str, plan: dict, ops: list, no_plan: bool, code: str) -> str:
-    """The HubSpot note: ids and codes only (never a name or contact detail)."""
-    n = len(plan["bookings"])
-    parts = [f"Famly ad hoc worker: ad hoc deal {deal_id} booked {n} session{'s' if n != 1 else ''} on Famly child "
-             f"{child_id}."]
-    if ops:
-        parts.append(f"The child has an operations deal ({', '.join(ops)}): no Ad Hoc Only tag, end date kept. "
-                     "Please ask the parents to book on Famly next time.")
-    if no_plan:
-        parts.append("Needs checking: the child has an operations deal but no plan in Famly.")
-    if code in FOLLOWUP_FOR:
-        parts.append(f"Needs checking: children registry {code}.")
-    return " ".join(parts)
 
 
 def _contacts_missing(job, child_id: str) -> bool:

@@ -109,14 +109,10 @@ class PlannerTests(TempRegistry):
 
 
 class FakeHubSpot:
-    """deal_writer stand-in with notes and the follow-up dropdown."""
+    """deal_writer stand-in with the follow-up dropdown (there are no notes)."""
 
-    def __init__(self, note="note_added", followup="followup_written"):
-        self.calls, self._note, self._followup = [], note, followup
-
-    def add_note(self, deal_id, body):
-        self.calls.append(("note", deal_id, body))
-        return self._note
+    def __init__(self, followup="followup_written"):
+        self.calls, self._followup = [], followup
 
     def set_followup(self, deal_id, value):
         self.calls.append(("followup", deal_id, value))
@@ -166,23 +162,27 @@ class LiveTests(TempRegistry, Case):
         text = self.notifier.sent[-1]["text"]
         self.assertIn("book on Famly next time", text)
         self.assertIn("Zed Quill (Famly Id: c1) is marked as having an operations deal", text)
-        self.assertEqual([(k, d) for k, d, _ in self.hubspot.calls], [("note", "1"), ("note", "900"), ("followup", "900")])
-        self.assertEqual(self.hubspot.calls[-1][2], "no_famly_plan")
-        for _k, _d, body in self.hubspot.calls[:2]:
-            self.assertNotIn("Zed", body)                                     # notes carry ids only
+        self.assertEqual(self.hubspot.calls, [("followup", "900", "no_famly_plan")])     # no notes
+        self.assertIn("famly_followup set to no_famly_plan", text)
+
+    def test_an_operations_child_with_a_plan_needs_no_hubspot_follow_up(self):
+        self.add("c1", deals=[("900", registry.OPERATIONS)])
+        job = self.run_live(ops_plan(no_plan=False))
+        self.assertEqual((job.status, self.hubspot.calls), (store.DONE, []))
+        self.assertIn("book on Famly next time", self.notifier.sent[-1]["text"])
 
     def test_hubspot_failures_are_flagged_in_slack_and_never_stop_the_job(self):
         self.add("c1", deals=[("900", registry.OPERATIONS)])
-        job = self.run_live(ops_plan(), hubspot=FakeHubSpot(note="note_failed", followup="followup_failed"))
+        job = self.run_live(ops_plan(), hubspot=FakeHubSpot(followup="followup_failed"))
         self.assertEqual(job.status, store.DONE)
-        self.assertIn("Needs checking: HubSpot could not be updated", self.notifier.sent[-1]["text"])
+        self.assertIn("Needs checking: famly_followup could not be set", self.notifier.sent[-1]["text"])
 
     def test_a_registry_conflict_or_failure_is_flagged_never_a_stop(self):
         self.add("other", deals=[("1", registry.ADHOC)])                        # the deal is on another child
         job = self.run_live(plan(), details={"name": "Zed Quill", "dob": DOB, "urn": ""})
         self.assertEqual((job.status, registry.by_deal("1").famly_child_id), (store.DONE, "other"))
         self.assertIn("linked to a different child", self.notifier.sent[-1]["text"])
-        self.assertEqual([(k, d) for k, d, _ in self.hubspot.calls], [("note", "1")])
+        self.assertEqual(self.hubspot.calls, [])                              # not an operations child: Slack only
 
         class Broken:
             def record_existing_child(self, *a):
