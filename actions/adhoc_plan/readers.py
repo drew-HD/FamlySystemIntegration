@@ -72,13 +72,9 @@ class Readers:
             bill_payers=famly.bill_payers if payer_scan.enabled() else None)
 
     def deal_and_contacts(self, deal_id: str):
-        """The deal's properties and contacts, read fresh, for the write phase (in memory only)."""
-        deals = adhoc.deals_by_id(self.hubspot, [str(deal_id)])
-        if not deals:
-            return None, None
-        if self._labels is None:
-            self._labels = links.load_labels(self.hubspot)
-        return deals[0], links.deal_contacts(self.hubspot, self._labels, str(deal_id))
+        """The deal and contacts from the SAME read that produced the last plan for this deal (memory only), so the
+        write phase never builds a child from a second, possibly different, read. (None, None) if there was none."""
+        return getattr(self, "_context", {}).pop(str(deal_id), (None, None))
 
     def plan_deal(self, deal_id: str, index: audit.Index | None = None, confirmed_child_id: str | None = None,
                   force_new: bool = False) -> dict:
@@ -97,6 +93,7 @@ class Readers:
             contacts = links.deal_contacts(self.hubspot, self._labels, str(deal["id"]))
         except Exception:  # noqa: BLE001
             contacts = None
+        self._context = {**getattr(self, "_context", {}), str(deal_id): (deal, contacts)}
         plan = planner.build_plan(deal, stage or None, contacts, index or self.famly_index(), self.deps(),
                                   self.today or date.today(), confirmed_child_id=confirmed_child_id,
                                   force_new=force_new)

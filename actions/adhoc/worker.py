@@ -336,6 +336,9 @@ def _create_new_child(job, deps, plan, outcomes: list, problems: list) -> str | 
         _end(job, deps, store.FAILED if deal is None or contacts is None else store.NEEDS_REVIEW,
              "deal_not_readable" if deal is None or contacts is None else "plan_changed")
         return None                                         # nothing was sent
+    if not new_child.deal_matches_plan(deal, plan):         # the child's data must be what was approved
+        _end(job, deps, store.NEEDS_REVIEW, "plan_changed")
+        return None
     famly = deps.famly_factory()
     try:
         child_id = new_child.ensure_child(job, deps.public, famly, plan, deal, deps.sleep)

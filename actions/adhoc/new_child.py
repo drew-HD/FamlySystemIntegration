@@ -63,6 +63,20 @@ def lookup_with_settle(sleep: Callable, fn: Callable[[], list], expect: str | No
     return (ids if readable else []), readable
 
 
+def deal_matches_plan(deal: dict, plan: dict) -> bool:
+    """The group re-derived from this deal's DOB at the planned first day equals the approved group id."""
+    from datetime import date
+
+    from actions.onboard_dry_run import derive
+    try:
+        birthday = derive.parse_hubspot_date(deal.get("child_date_of_birth"))
+        first = date.fromisoformat(plan["firstDay"])
+        title = derive.group_title_for_age(derive.completed_months(birthday, first))
+        return derive.group_id_for(plan["site"], title) == plan.get("groupId")
+    except Exception:  # noqa: BLE001 - cannot re-derive: never create
+        return False
+
+
 def existing_children(famly, deal_id: str, urn: str | None) -> list[str]:
     """Famly children carrying the deal reference or the allocated URN (distinct ids)."""
     ids = list(famly.children_by_deal_id(deal_id))

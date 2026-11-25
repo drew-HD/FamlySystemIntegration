@@ -81,6 +81,10 @@ class NewChildCase(Case):
             p = mock.patch.object(famly_writes, target, side_effect=side)
             p.start()
             self.addCleanup(p.stop)
+        g = mock.patch("actions.onboard_dry_run.derive.group_id_for",
+                       side_effect=lambda site, title: "grp-1" if title == "Littlewings" else "grp-other")
+        g.start()
+        self.addCleanup(g.stop)
         self.stage = mock.patch.object(new_child.bill_payer_writes, "run_stage",
                                        return_value=StageResult("bill_payer_created", "bp1"))
         self.run_stage = self.stage.start()
@@ -255,6 +259,37 @@ class SafetyTests(NewChildCase):
                 job, _ = self.go()
                 self.assertEqual((job.status, job.last_error_code), (store.NEEDS_REVIEW, "plan_changed"))
                 self.assertEqual((self.sent, self.writes.calls), ([], []))
+
+    def test_a_dob_change_that_moves_the_group_creates_nothing(self):
+        self.writes = FakeWrites()
+        store.enqueue("1", "live")
+        deps = self.deps(new_plan())
+        deps.deal_context = lambda deal_id: (deal(child_date_of_birth="2025-06-01"), contacts())   # now Hatchlings
+        worker.run_once(deps)
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        worker.run_once(deps)
+        job = store.latest_for_deal("1")
+        self.assertEqual((job.status, job.last_error_code), (store.NEEDS_REVIEW, "plan_changed"))
+        self.assertEqual((self.sent, self.writes.calls), ([], []))
+
+    def test_a_name_only_change_is_created_with_the_planned_data_from_the_same_read(self):
+        self.writes = FakeWrites()
+        store.enqueue("1", "live")
+        deps = self.deps(new_plan())
+        deps.deal_context = lambda deal_id: (deal(child_first_name="Zedd"), contacts())    # one read, used as is
+        worker.run_once(deps)
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        worker.run_once(deps)
+        self.assertEqual(store.latest_for_deal("1").status, store.DONE)
+        payload = self.sent[0][1]
+        self.assertEqual((payload["currentGroupId"], payload["birthday"]), ("grp-1", "2024-06-01"))
+
+    def test_the_write_phase_reuses_the_plan_read_and_never_rereads_the_deal(self):
+        from actions.adhoc_plan.readers import Readers
+        r = Readers.__new__(Readers)
+        r._context = {"1": ("deal", "contacts")}
+        self.assertEqual(r.deal_and_contacts("1"), ("deal", "contacts"))
+        self.assertEqual(r.deal_and_contacts("1"), (None, None))        # nothing to re-read: the job stops
 
     def test_changed_contacts_since_approval_write_nothing(self):
         self.writes = FakeWrites()
