@@ -77,9 +77,14 @@ def deal_matches_plan(deal: dict, plan: dict) -> bool:
         return False
 
 
-def existing_children(famly, urn: str) -> list[str]:
-    """Famly children whose externalId is the URN allocated for this deal (distinct ids): a live roster scan."""
-    return list(dict.fromkeys(famly.children_by_urn(urn)))
+def existing_children(public, urn: str) -> list[str]:
+    """Famly children whose externalId is the URN allocated for this deal (distinct ids).
+
+    ALWAYS a fresh roster scan: `FamlyReads.children_by_urn` memoises the roster per instance, so a read-back through it
+    after the create could never see the new child (first live new-child deal, 2026-11-25). Needs the public client."""
+    from actions.urn_lookup import runner as urn_runner
+    roster = urn_runner.fetch_roster(public)
+    return list(dict.fromkeys(row.id for row in urn_runner.find_matches(urn, roster)))
 
 
 def ensure_child(job, public, famly, plan: dict, deal: dict, sleep: Callable) -> str:
@@ -90,7 +95,7 @@ def ensure_child(job, public, famly, plan: dict, deal: dict, sleep: Callable) ->
     if not urn:
         raise StopJob(store.NEEDS_REVIEW, "urn_missing")      # nothing was sent; a child is never created without it
     try:
-        found = existing_children(famly, urn)                # the live lookup immediately before the write
+        found = existing_children(public, urn)               # the live lookup immediately before the write
     except Exception as exc:  # noqa: BLE001
         logger.error("adhoc: pre-create lookup hit %s", type(exc).__name__)
         raise StopJob(store.NEEDS_REVIEW, "child_lookup_failed") from None
@@ -110,7 +115,7 @@ def ensure_child(job, public, famly, plan: dict, deal: dict, sleep: Callable) ->
         child_id = famly_writes.create_child(public, payload)
     except (famly_writes.CreateRejected, famly_writes.OutcomeUnknown) as exc:
         rejected = exc.code if isinstance(exc, famly_writes.CreateRejected) else None
-        landed, readable = lookup_with_settle(sleep, lambda: existing_children(famly, urn), label="settle")
+        landed, readable = lookup_with_settle(sleep, lambda: existing_children(public, urn), label="settle")
         if len(landed) > 1:
             raise StopJob(store.NEEDS_REVIEW, "child_ambiguous") from None
         if not landed:
@@ -119,15 +124,19 @@ def ensure_child(job, public, famly, plan: dict, deal: dict, sleep: Callable) ->
             raise StopJob(store.NEEDS_REVIEW, "child_outcome_unknown") from None
         child_id = landed[0]
     store.update(job.id, child_id=child_id)                  # at once: a crash from here never replays the create
-    seen, readable = lookup_with_settle(sleep, lambda: existing_children(famly, urn), expect=child_id,
+    seen, readable = lookup_with_settle(sleep, lambda: existing_children(public, urn), expect=child_id,
                                         label="readback")
     if not readable or seen != [child_id]:
         raise StopJob(store.NEEDS_REVIEW, "readback_child_lookup_failed")
     return child_id
 
 
-def create_contacts(job, public, famly, plan: dict, contacts, child_id: str, sleep: Callable) -> ContactsResult:
-    """Every contact is tried, independently, BILL PAYER FIRST. A failure is recorded and the next goes ahead."""
+def create_contacts(job, public, famly, plan: dict, contacts, child_id: str, sleep: Callable,
+                    fresh_child: bool = True) -> ContactsResult:
+    """Every contact is tried, independently, BILL PAYER FIRST. A failure is recorded and the next goes ahead.
+
+    `fresh_child` False (a RESUMED child, made by an earlier job that never reached its contacts): every contact is
+    looked up first (HubSpot reference, then email), so nothing already on the child is created again."""
     result = ContactsResult()
     by_id = {str(c.hubspot_id): c for c in contacts}
     entries = sorted(plan["contacts"], key=lambda e: not e["isBillPayer"])
@@ -138,7 +147,7 @@ def create_contacts(job, public, famly, plan: dict, contacts, child_id: str, sle
         try:
             contact = by_id[hid]
             target = normalise_email(contact.email)
-            if creates_sent == 0:
+            if fresh_child and creates_sent == 0:
                 here: list = []                                # a child created a moment ago has no contacts
             else:
                 here = famly.locate_contact(child_id, hid, contact.emails or target).ids

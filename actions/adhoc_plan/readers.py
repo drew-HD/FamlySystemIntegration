@@ -27,6 +27,14 @@ def allocated_urn_for_deal(deal_id: str) -> str | None:
     return urn_fmt.format_urn(held[0], held[1]) if held else None
 
 
+def resume_contacts_for_deal(deal_id: str, child_id: str) -> bool:
+    """True when an earlier job of this deal created this child and recorded NO contact outcome at all (it stopped
+    before contacts). A job with SOME contact outcomes is not resumed: a person decides."""
+    from actions.adhoc import store
+    earlier = store.earlier_creates_for_deal(str(deal_id), str(child_id), "")
+    return bool(earlier) and not any(str(o).startswith("contact:") for job in earlier for o in job.outcomes or [])
+
+
 class Readers:
     def __init__(self, today: date | None = None):
         from actions.urn_lookup import runner as urn_runner
@@ -80,7 +88,7 @@ class Readers:
             price_child_for_site=lambda site: self._test_children.get(site),
             urn=lambda deal_id, site: urn_plan.urn_section(UrnService(self.hubspot, famly), deal_id, site, live),
             bill_payers=famly.bill_payers if payer_scan.enabled() else None,
-            allocated_urn=allocated_urn_for_deal)
+            allocated_urn=allocated_urn_for_deal, resume_contacts=resume_contacts_for_deal)
 
     def deal_and_contacts(self, deal_id: str):
         """The deal and contacts from the SAME read that produced the last plan for this deal (memory only), so the

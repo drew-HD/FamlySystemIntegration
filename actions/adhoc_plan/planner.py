@@ -49,6 +49,9 @@ class Deps:
     # deal id -> the URN already allocated to this deal (onboard store), or None. A child an earlier job created for this
     # deal carries no deal reference, so a Retry finds it by this URN.
     allocated_urn: Callable[[str], str | None] | None = None
+    # deal id, child id -> True when an EARLIER job of this deal created this child but never reached its contacts (no
+    # contact outcomes recorded): the plan then carries the contacts and bill payer sections and creates them.
+    resume_contacts: Callable[[str, str], bool] | None = None
 
 
 def _tokens(*parts) -> frozenset:
@@ -280,10 +283,15 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
 
     if child is None and deps.urn is not None and sessions:
         _new_child_section(plan, deal, deal_id, contacts, deps, sessions[0][0], birthday)
+    elif child is not None and deps.resume_contacts is not None and sessions and deps.resume_contacts(deal_id, child.id):
+        plan["resumeContacts"] = True               # an earlier job made this child but never got to its contacts
+        _contacts_section(plan, contacts, deps)
 
     # ----- the steps a real run would take --------------------------------------------------------------------
     if child is None:
         plan["steps"] += ["create_child_no_end_date", "create_contacts"]
+    elif plan.get("resumeContacts"):
+        plan["steps"].append("create_contacts")
     if plan["adHocOnly"]:
         plan["steps"].append("assign_ad_hoc_only_tag")
         if child is not None:
@@ -293,22 +301,10 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     return plan
 
 
-def _new_child_section(plan: dict, deal: dict, deal_id: str, contacts, deps: Deps, first_day: date,
-                       birthday: date | None) -> None:
-    """What a NEW child needs (step 3b): first day, group by age at the first BOOKED day, the contacts (ids and flags
-    only), the bill payer decision and the URN. Anything missing is a HOLD; nothing is guessed."""
+def _contacts_section(plan: dict, contacts, deps: Deps) -> None:
+    """The deal's contacts (ids and flags only) and the bill payer decision, with the holds they imply. Used for a
+    NEW child and for a RESUMED child (made by an earlier job that never reached its contacts)."""
     holds = plan["holds"]
-    plan["firstDay"] = first_day.isoformat()
-    if birthday is not None:
-        if birthday > first_day:
-            holds.append("dates_inconsistent")
-        else:
-            try:
-                title = derive.group_title_for_age(derive.completed_months(birthday, first_day))
-                plan["groupId"] = derive.group_id_for(plan["site"], title)
-                plan["groupTitle"] = title
-            except derive.Hold:
-                holds.append("group_missing")
     if contacts is None:
         holds.append("contacts_not_readable")
     else:
@@ -327,6 +323,25 @@ def _new_child_section(plan: dict, deal: dict, deal_id: str, contacts, deps: Dep
             recipient = bill_payers.recipient_state(decision, payers, {"status": "would_create"})
             if recipient:
                 plan["billPayer"]["recipient"] = recipient
+
+
+def _new_child_section(plan: dict, deal: dict, deal_id: str, contacts, deps: Deps, first_day: date,
+                       birthday: date | None) -> None:
+    """What a NEW child needs (step 3b): first day, group by age at the first BOOKED day, the contacts (ids and flags
+    only), the bill payer decision and the URN. Anything missing is a HOLD; nothing is guessed."""
+    holds = plan["holds"]
+    plan["firstDay"] = first_day.isoformat()
+    if birthday is not None:
+        if birthday > first_day:
+            holds.append("dates_inconsistent")
+        else:
+            try:
+                title = derive.group_title_for_age(derive.completed_months(birthday, first_day))
+                plan["groupId"] = derive.group_id_for(plan["site"], title)
+                plan["groupTitle"] = title
+            except derive.Hold:
+                holds.append("group_missing")
+    _contacts_section(plan, contacts, deps)
     if not holds:                                  # a number is reserved only for a plan with no hold
         section = deps.urn(deal_id, plan["site"])
         plan["urn"] = section

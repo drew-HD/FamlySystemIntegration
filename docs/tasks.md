@@ -2,6 +2,7 @@
 
 | Task | Branch | Status |
 |---|---|---|
+| Ad hoc new-child fixes: fresh roster read-back, URN and child id written to the deal, resume contacts | adhoc-newchild-fixes | Built, tests running. Needs a reviewer pass (Famly and HubSpot writes), Drew's merge approval, then restart `famly-adhoc-worker`. Then recover deal 67661137730 (child HD0001CL exists in Famly with no parent and no booking). |
 | Install the `famly-adhoc-worker` systemd unit | none | Drew: copy `deploy/famly-adhoc-worker.service.example`, confirm paths with `systemctl cat famly-onboard-worker`, enable and start it; restart it after any `.env` change (ADHOC_MODE is read at start). Until then approvals only run when `adhoc-worker --once` is run by hand. |
 | Ad hoc worker as a service (robust loop, SIGTERM, unit template, docs; needs_review after a sent booking) | adhoc-worker-service | Merged and deployed (main d1b5739). Reviewed twice, approved. |
 | Ad hoc live test on the HDCW test child (deal 68715656456) | none | Passed: booked 4 sessions, tag present, end date none. The 4 test sessions were removed by hand in Famly by Drew. |
