@@ -1,5 +1,5 @@
-"""registry-lookup: find a child in the children registry. Prints names and dates of birth to the terminal
-only (CLAUDE.md allows names on the terminal); never emails. Nothing is logged."""
+"""registry-lookup: find a child in the children registry. Prints names, ids, URNs and deal ids to the
+terminal only (CLAUDE.md allows names on the terminal); never emails or dates of birth. Nothing is logged."""
 
 import argparse
 import sys
@@ -22,7 +22,7 @@ def add_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _show(child: store.Child, result: str | None = None) -> dict:
-    out = {"famlyChildId": child.famly_child_id, "name": child.full_name, "dob": child.dob,
+    out = {"famlyChildId": child.famly_child_id, "name": child.full_name,
            "site": child.site_code, "urns": child.urns,
            "operationsDeals": [d for d, k in child.deals if k == store.OPERATIONS],
            "adhocDeals": [d for d, k in child.deals if k == store.ADHOC],
