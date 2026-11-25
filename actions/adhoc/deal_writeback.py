@@ -1,8 +1,8 @@
 """The ONLY HubSpot writes the ad hoc worker makes: the child's URN and the Famly child id onto the DEAL (Drew,
-2026-11-25: so the deal records which child it made and a Retry or a person can find it), plus (registry stage 3) a
-NOTE on a deal and the `famly_followup` dropdown on an OPERATIONS deal, and `famly_plan_status` / `famly_plan_note` on the
+2026-11-25: so the deal records which child it made and a Retry or a person can find it), plus (registry stage 3) the
+`famly_followup` dropdown on an OPERATIONS deal (no notes), and `famly_plan_status` / `famly_plan_note` on the
 AD HOC deal after a booking attempt (`set_plan_status`), so the CS team sees what needs checking
-(`add_note` / `set_followup`: ids and codes only; a failure is a code, never a stop). For the URN and child id, the
+(`set_followup`: codes only; a failure is a code, never a stop). For the URN and child id, the
 same rules as onboarding's `_write_allocated_urn` and `Syncer`:
 
   * only `child_urn` and `famly_childid`, nothing else (a guard, not a convention);
@@ -73,18 +73,6 @@ class DealWriter:
         except (WritebackFailed, HubSpotError, ValueError) as exc:
             logger.error("adhoc: urn write to HubSpot failed (%s)", type(exc).__name__)    # type only
             raise WritebackFailed(URN_WRITE_FAILED) from None
-
-    def add_note(self, deal_id: str, body: str) -> str:
-        """A note on the deal (ids and codes only). Never raises: 'note_added' | 'note_failed'."""
-        create = getattr(self.client, "create_deal_note", None)
-        try:
-            if not callable(create):
-                raise ValueError("no note writer")
-            create(str(deal_id), body)
-        except (HubSpotError, ValueError) as exc:
-            logger.error("adhoc: HubSpot note failed (%s)", type(exc).__name__)
-            return "note_failed"
-        return "note_added"
 
     def set_followup(self, deal_id: str, value: str) -> str:
         """The CS follow-up dropdown on an operations deal. Never raises: 'followup_written' | 'followup_failed'
