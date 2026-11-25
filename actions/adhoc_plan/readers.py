@@ -18,12 +18,13 @@ DEAL_NOT_FOUND = "deal_not_found"
 
 
 def allocated_urn_for_deal(deal_id: str) -> str | None:
-    """The URN already reserved for this deal in the onboard store (read only), as a string, or None."""
+    """The URN already reserved for this deal in the onboard store (read only), as a string, or None.
+
+    The store holds the URN SUFFIX ("CW"), not the site code, exactly as `UrnService.own` reads it."""
     from actions.onboard import store as onboard_store
     from actions.onboard_dry_run import urn as urn_fmt
     held = onboard_store.urn_allocation_for_deal(str(deal_id))
-    suffix = urn_fmt.site_suffix(held[0]) if held else None
-    return urn_fmt.format_urn(suffix, held[1]) if held and suffix else None
+    return urn_fmt.format_urn(held[0], held[1]) if held else None
 
 
 class Readers:

@@ -116,12 +116,15 @@ class AllocatedUrnTests(Case):
             plan = self.planned([other], allocated)
             self.assertEqual((plan["match"]["via"], plan["match"]["childIds"]), ("none", []))
 
-    def test_the_reader_builds_the_urn_from_the_onboard_store(self):
+    def test_the_reader_builds_the_urn_from_the_onboard_store_exactly_as_the_allocator_does(self):
         from actions.adhoc_plan import readers
+        from actions.onboard.urn_alloc import UrnService
         from actions.onboard_dry_run import urn as urn_fmt
-        want = urn_fmt.format_urn(urn_fmt.site_suffix("HDCW"), 42)
-        with mock.patch("actions.onboard.store.urn_allocation_for_deal", return_value=("HDCW", 42)):
-            self.assertEqual(readers.allocated_urn_for_deal("1"), want)
+        suffix = urn_fmt.site_suffix("HDCW")                       # the store holds the SUFFIX ("CW"), not the site code
+        self.assertEqual(suffix, "CW")
+        with mock.patch("actions.onboard.store.urn_allocation_for_deal", return_value=(suffix, 42)):
+            self.assertEqual(readers.allocated_urn_for_deal("1"), "HD0042CW")
+            self.assertEqual(readers.allocated_urn_for_deal("1"), UrnService(None, None).own("1"))   # same as `own`
         with mock.patch("actions.onboard.store.urn_allocation_for_deal", return_value=None):
             self.assertIsNone(readers.allocated_urn_for_deal("1"))
 
