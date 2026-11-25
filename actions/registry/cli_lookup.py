@@ -26,6 +26,7 @@ def _show(child: store.Child, result: str | None = None) -> dict:
            "site": child.site_code, "urns": child.urns,
            "operationsDeals": [d for d, k in child.deals if k == store.OPERATIONS],
            "adhocDeals": [d for d, k in child.deals if k == store.ADHOC],
+           "weekendSchoolDeals": [d for d, k in child.deals if k == store.WEEKEND_SCHOOL],
            "source": child.source, "updatedAt": child.updated_at}
     if result:
         out["match"] = result

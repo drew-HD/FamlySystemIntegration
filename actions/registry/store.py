@@ -21,8 +21,8 @@ from pathlib import Path
 
 DEFAULT_STORE_PATH = Path(__file__).resolve().parents[2] / "var" / "children_registry.sqlite3"
 
-OPERATIONS, ADHOC = "operations", "adhoc"
-DEAL_KINDS = (OPERATIONS, ADHOC)
+OPERATIONS, ADHOC, WEEKEND_SCHOOL = "operations", "adhoc", "weekend_school"
+DEAL_KINDS = (OPERATIONS, ADHOC, WEEKEND_SCHOOL)
 
 # Results of add_urn / add_deal / add_email.
 ADDED, ALREADY, CONFLICT = "added", "already", "conflict"
@@ -172,6 +172,16 @@ def add_deal(famly_child_id: str, deal_id: str, kind: str) -> str:
     return _link("child_deals", "deal_id", key, str(famly_child_id), {"kind": kind})
 
 
+def set_kind(deal_id: str, kind: str) -> bool:
+    """Change the type of a deal that is already linked (never moves it to another child). False if the
+    deal is not in the registry."""
+    if kind not in DEAL_KINDS:
+        raise ValueError(f"kind must be one of {DEAL_KINDS}")
+    with _open() as connection:
+        cursor = connection.execute("UPDATE child_deals SET kind = ? WHERE deal_id = ?", (kind, str(deal_id).strip()))
+        return bool(cursor.rowcount)
+
+
 def add_email(famly_child_id: str, email: str) -> str:
     """Record a parent email on the child (one email may be on several children: siblings)."""
     key = str(email or "").strip().casefold()
@@ -249,6 +259,7 @@ def stats() -> dict:
             "urns": one("SELECT COUNT(*) FROM child_urns"),
             "operations_deals": one(f"SELECT COUNT(*) FROM child_deals WHERE kind = '{OPERATIONS}'"),
             "adhoc_deals": one(f"SELECT COUNT(*) FROM child_deals WHERE kind = '{ADHOC}'"),
+            "weekend_school_deals": one(f"SELECT COUNT(*) FROM child_deals WHERE kind = '{WEEKEND_SCHOOL}'"),
             "emails": one("SELECT COUNT(*) FROM child_emails"),
         }
 

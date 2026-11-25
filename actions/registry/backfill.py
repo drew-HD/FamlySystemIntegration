@@ -98,16 +98,32 @@ def _site_code(child, site_codes: dict) -> str | None:
     return site_codes.get(relations[-1][0]) if relations else None
 
 
+WEEKEND_SCHOOL_PIPELINE = "weekend school"
+
+
+def weekend_school_deals(hubspot, stages: dict) -> list[dict]:
+    """Every deal in the Weekend School pipeline: one search per page of 100."""
+    from actions.onboard_dry_run import derive
+    from core import hubspot as hubspot_cfg
+    ids = [sid for sid, (pipeline, _) in stages.items() if derive.norm_stage(pipeline) == WEEKEND_SCHOOL_PIPELINE]
+    if not ids:
+        return []
+    return hubspot.search_deals([{"propertyName": "dealstage", "operator": "IN", "values": ids}],
+                                list(hubspot_cfg.DEAL_PROPERTIES))
+
+
 def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict], links: dict,
-          site_codes: dict, stages: dict | None = None) -> tuple[dict, Report]:
+          site_codes: dict, stages: dict | None = None,
+          weekend_deals: list[dict] | None = None) -> tuple[dict, Report]:
     """Work out what to write, without writing. Returns ({"children": [...], "deals": [(deal, child,
     kind)]}, report)."""
     report = Report()
     from actions.onboard_dry_run import derive
     stage_of = {str(d["id"]): (stages or {}).get(str(d.get("dealstage")), ("", ""))[1]
-                for d in operations_deals + adhoc_deals}
+                for d in operations_deals + adhoc_deals + (weekend_deals or [])}
     kinds = {str(d["id"]): store.OPERATIONS for d in operations_deals}
     kinds.update({str(d["id"]): store.ADHOC for d in adhoc_deals})
+    kinds.update({str(d["id"]): store.WEEKEND_SCHOOL for d in weekend_deals or []})
 
     by_urn: dict[str, list[str]] = {}
     for child in children.values():
@@ -145,7 +161,7 @@ def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict],
             else:
                 report.add(REFERENCE_UNKNOWN_DEAL, child.id, foreign)
 
-    for deal in operations_deals + adhoc_deals:
+    for deal in operations_deals + adhoc_deals + (weekend_deals or []):
         deal_id = str(deal["id"])
         recorded = str(deal.get("famly_childid") or "").strip()
         if recorded:
@@ -223,10 +239,11 @@ def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = Non
     stages = hubspot.stage_names()
     operations = audit.operations_deals(hubspot, stages, None)
     adhoc = adhoc_audit.adhoc_deals(hubspot, stages)
+    weekend = weekend_school_deals(hubspot, stages)
     links = local_links() if links is None else links
     site_codes = _site_codes() if site_codes is None else site_codes
 
-    plan, report = build(children, operations, adhoc, links, site_codes, stages)
+    plan, report = build(children, operations, adhoc, links, site_codes, stages, weekend)
     kinds = Counter(kind for _, _, kind in plan["deals"])
     summary = {
         "mode": "confirm" if confirm else "dry_run",
@@ -234,6 +251,7 @@ def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = Non
         "children_with_urn": sum(1 for c in plan["children"] if c.external_id),
         "operations_deals": len(operations),
         "adhoc_deals": len(adhoc),
+        "weekend_school_deals": len(weekend),
         "deals_to_link": dict(kinds),
         "codes": dict(sorted(report.counts.items())),
         "live_deals_without_child": dict(Counter(kind for _, kind, _ in plan["no_child_deals"])),

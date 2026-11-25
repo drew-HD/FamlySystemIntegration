@@ -19,7 +19,7 @@ class FakeHubSpot:
     def stage_names(self):
         return {"ops": ("Operations", "Live"), "adhoc": ("Ad Hoc", "Approved"),
                 "left": ("Operations", "Left Nursery"), "lost": ("Ad Hoc", "Closed Lost"),
-                "done": ("Ad Hoc", "Ad Hoc Completed")}
+                "done": ("Ad Hoc", "Ad Hoc Completed"), "ws": ("Weekend School", "Active Weekend School")}
 
     def search_deals(self, filters, properties):
         stages = set(filters[0]["values"])
@@ -59,6 +59,16 @@ class StoreTests(Base):
         self.assertEqual(store.by_urn("HD0001CW").famly_child_id, "c1")
         self.assertEqual(store.by_deal("111").famly_child_id, "c1")
         self.assertEqual(store.by_deal("111").deals, [("111", store.OPERATIONS)])
+
+    def test_set_kind_changes_type_never_child(self):
+        store.upsert_child("c1", TEST_NAME, "2024-01-02", None, "test")
+        store.add_deal("c1", "111", store.OPERATIONS)
+        self.assertTrue(store.set_kind("111", store.ADHOC))
+        self.assertEqual(store.by_deal("111").famly_child_id, "c1")
+        self.assertEqual(store.by_deal("111").deals, [("111", store.ADHOC)])
+        self.assertFalse(store.set_kind("999", store.ADHOC))
+        with self.assertRaises(ValueError):
+            store.set_kind("111", "nursery")
 
     def test_upsert_refreshes_from_famly_and_keeps_source(self):
         self.assertTrue(store.upsert_child("c1", "Old Name", "2024-01-02", "HDCW", "adhoc"))
@@ -171,6 +181,17 @@ class BackfillTests(Base):
         self.assertEqual(store.by_deal("303").famly_child_id, "c1")
         self.assertEqual(store.by_deal("304").famly_child_id, "c2")
         self.assertEqual(summary["_no_child_deals"], [])
+
+    def test_weekend_school_pipeline_deals_linked_as_weekend_school(self):
+        kids = [child("c1", refs=["401"]), child("c2", name="Testchild Beta", urn="HD0002CW")]
+        deals = [{"id": "401", "dealstage": "ws"}, {"id": "402", "dealstage": "ws", "child_urn": "HD0002CW"},
+                 {"id": "403", "dealstage": "ws"}]
+        summary, _ = self.run_backfill(kids, deals, confirm=True)
+        self.assertEqual(summary["weekend_school_deals"], 3)
+        self.assertEqual(store.by_deal("401").deals, [("401", store.WEEKEND_SCHOOL)])
+        self.assertEqual(store.by_deal("402").famly_child_id, "c2")
+        self.assertIn(("403", store.WEEKEND_SCHOOL, "Active Weekend School"), summary["_no_child_deals"])
+        self.assertEqual(store.stats()["weekend_school_deals"], 2)
 
     def test_dry_run_writes_nothing(self):
         summary, _ = self.run_backfill([child("c1", refs=["101"])], [{"id": "101", "dealstage": "ops"}])
