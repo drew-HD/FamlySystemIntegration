@@ -40,6 +40,7 @@ SENTENCES = {
     "session_slot_unknown": "A session slot is not Morning, Afternoon or Full Day.",
     "session_date_invalid": "A booked date could not be read.",
     "session_date_duplicate": "The same date is booked twice.",
+    "no_future_sessions": "Every booked date is in the past, so there is nothing to book.",
     "session_date_past": "A booked date is in the past.",
     "session_date_weekend": "A booked date is a weekend.",
     "discount_invalid": "The deal's discount is not a number between 0 and 1.",
@@ -108,6 +109,8 @@ def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_n
     lines.append(total)
     if "conflicts_not_checked_new_child" in plan["flags"]:
         lines.append("Conflicts: not checked (the child does not exist yet).")
+    if plan.get("skippedPast"):
+        lines.append("Past dates not booked: " + ", ".join(long_date(d) for d in plan["skippedPast"]))
     lines.append(f"Steps: {', '.join(plan['steps'])}")
     lines.append(f"Plan: `{digest[:16]}`")
     return "\n".join(lines)

@@ -139,19 +139,47 @@ class PricingAndHoldTests(Case):
         self.assertEqual(plan["discountAmount"], "73.13")
         self.assertEqual(self.plan([kid()])["discountAmount"], "0.00")
 
-    def test_a_past_date_is_a_hold_at_every_stage(self):
+    def test_all_past_dates_hold_at_every_stage(self):
         for stage in ("Approved", "Ad Hoc Started", "Ad Hoc Completed", "Closed Lost"):
-            plan = planner.build_plan(deal(ad_hoc_date_1="2026-11-02"), stage, [Contact("mum@x.org")],
+            plan = planner.build_plan(deal(ad_hoc_date_1="2026-11-02", ad_hoc_date_2="", ad_hoc_session_2=""), stage, [Contact("mum@x.org")],
                                       Index({"c1": kid()}), planner.Deps(
                                           has_plan=lambda c: False, read_sessions=lambda c, d: LOOKUP,
                                           preview=lambda c, p, d: {}, price_child_for_site=lambda s: "t"), TODAY)
-            self.assertIn("session_date_past", plan["holds"], stage)
+            self.assertIn("no_future_sessions", plan["holds"], stage)
+            self.assertNotIn("session_date_past", plan["holds"], stage)
+            self.assertNotIn("purchase", plan, stage)
+
+    def test_mixed_deal_books_only_future_sessions(self):
+        # 2 Nov (past, Morning 75) + 28 Dec Morning 75 + 29 Dec Full Day 150; 10% discount on the booked two only
+        plan = self.plan([kid()], adhoc_discount="0.1", ad_hoc_date_3="2026-11-02", ad_hoc_session_3="Morning")
+        self.assertEqual(plan["holds"], [])
+        self.assertEqual(plan["skippedPast"], ["2026-11-02"])
+        self.assertIn("past_dates_skipped", plan["flags"])
+        self.assertEqual([b["date"] for b in plan["bookings"]], ["2026-12-28", "2026-12-29"])
+        self.assertEqual([b["purchaseDate"] for b in plan["purchase"]["sessionBookings"]], ["2026-12-28", "2026-12-29"])
+        self.assertEqual((plan["total"], plan["discountAmount"], plan["totalAfterDiscount"]),
+                         ("225.00", "22.50", "202.50"))
+        self.assertEqual(plan["purchase"]["discountAmount"], "22.50")
+        self.assertIn("book_2_sessions", plan["steps"])
+
+    def test_today_counts_as_future(self):
+        plan = self.plan([kid()], ad_hoc_date_1="2026-11-24", ad_hoc_session_1="Morning",
+                         ad_hoc_date_2="2026-11-02", ad_hoc_session_2="Morning")
+        self.assertEqual([b["date"] for b in plan["bookings"]], ["2026-11-24"])
+        self.assertEqual(plan["skippedPast"], ["2026-11-02"])
+        alone = self.plan([kid()], ad_hoc_date_1="2026-11-24", ad_hoc_date_2="", ad_hoc_session_2="")
+        self.assertEqual((alone["holds"], "skippedPast" in alone), ([], False))
+
+    def test_skipped_past_changes_the_plan_hash(self):
+        from actions.adhoc import worker
+        a = self.plan([kid()], ad_hoc_date_3="2026-11-02", ad_hoc_session_3="Morning")
+        b = dict(a, skippedPast=["2026-11-09"])
+        self.assertNotEqual(worker.plan_hash(a), worker.plan_hash(b))
 
     def test_holds_say_which_dates_they_are_about(self):
         plan = self.plan([kid()], ad_hoc_date_1="2026-11-02", ad_hoc_date_2="2026-12-05", ad_hoc_session_2="Morning",
                          ad_hoc_date_3="2026-12-05", ad_hoc_session_3="Morning")
-        self.assertEqual(plan["details"], {"session_date_past": ["2026-11-02"],
-                                           "session_date_duplicate": ["2026-12-05"],
+        self.assertEqual(plan["details"], {"session_date_duplicate": ["2026-12-05"],
                                            "session_date_weekend": ["2026-12-05"]})
         clean = self.plan([kid()])
         self.assertEqual(clean["details"], {})
@@ -186,7 +214,7 @@ class PricingAndHoldTests(Case):
             self.assertIn("discount_invalid", self.plan([kid()], adhoc_discount=bad)["holds"], bad)
         self.assertEqual(self.plan([kid()], adhoc_discount="0.1")["holds"], [])
         self.assertEqual(self.plan([kid()], adhoc_discount="0")["holds"], [])
-        self.assertIn("session_date_past", self.plan([kid()], ad_hoc_date_1="2026-11-02")["holds"])
+        self.assertIn("no_future_sessions", self.plan([kid()], ad_hoc_date_1="2026-11-02", ad_hoc_date_2="", ad_hoc_session_2="")["holds"])
         self.assertIn("session_slot_missing", self.plan([kid()], ad_hoc_session_1="")["holds"])
         self.assertIn("site_unmapped", self.plan([kid()], location_of_interest="Mars")["holds"])
         self.assertIn("conflict_preview_not_clean",
