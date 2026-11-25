@@ -15,7 +15,7 @@ Store: var/children_registry.sqlite3 (gitignored), code in actions/registry/. Ro
 - Parent email: a backup signal only (contacts can have several emails, and the primary email can change). It can raise the question; it never joins on its own.
 - Join by operations: move the start date to the deal's start; do NOT change the group; remove the Ad Hoc Only tag; do not change any ad hoc sessions already booked.
 - Backfill: one run from prod is fine if it catches everyone; nightly refresh later.
-- Open: Q2, HUBSPOT reference on the child (children.update) or famly_childid on the deal instead.
+- No HUBSPOT reference is added to an existing child (no children.update). The registry holds the Famly id, URNs and deal ids; onboarding writes famly_childid on the operations deal. The server finds children through the registry.
 
 ## Risks
 - Moving the start date uses internal GraphQL that is only proven for the end date; needs a live probe on a test child (stage 5).
