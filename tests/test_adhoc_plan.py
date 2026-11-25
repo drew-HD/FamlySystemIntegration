@@ -170,6 +170,20 @@ class PricingAndHoldTests(Case):
         alone = self.plan([kid()], ad_hoc_date_1="2026-11-24", ad_hoc_date_2="", ad_hoc_session_2="")
         self.assertEqual((alone["holds"], "skippedPast" in alone), ([], False))
 
+    def test_skipped_dates_are_not_judged_for_weekend_or_duplicate(self):
+        # 2026-11-07 is a Saturday; the past weekend date and a past duplicate sit beside clean future sessions
+        plan = self.plan([kid()], ad_hoc_date_3="2026-11-07", ad_hoc_session_3="Morning",
+                         ad_hoc_date_4="2026-11-02", ad_hoc_session_4="Morning",
+                         ad_hoc_date_5="2026-11-02", ad_hoc_session_5="Morning")
+        self.assertEqual((plan["holds"], plan["details"]), ([], {}))
+        self.assertEqual(plan["skippedPast"], ["2026-11-02", "2026-11-07"])
+        weekend = self.plan([kid()], ad_hoc_date_3="2026-12-05", ad_hoc_session_3="Morning",
+                            ad_hoc_date_4="2026-11-02", ad_hoc_session_4="Morning")
+        self.assertIn("session_date_weekend", weekend["holds"])
+        dup = self.plan([kid()], ad_hoc_date_3="2026-12-28", ad_hoc_session_3="Morning",
+                        ad_hoc_date_4="2026-11-02", ad_hoc_session_4="Morning")
+        self.assertIn("session_date_duplicate", dup["holds"])
+
     def test_skipped_past_changes_the_plan_hash(self):
         from actions.adhoc import worker
         a = self.plan([kid()], ad_hoc_date_3="2026-11-02", ad_hoc_session_3="Morning")

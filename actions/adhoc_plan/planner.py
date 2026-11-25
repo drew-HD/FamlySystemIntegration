@@ -103,12 +103,12 @@ def deal_sessions(deal: dict) -> list[tuple[date, str]]:
     return sorted(set(out))
 
 
-def date_details(deal: dict, today: date) -> dict[str, list[str]]:
+def date_details(deal: dict, since: date | None = None) -> dict[str, list[str]]:
     """Which dates each session-data hold is about, as ISO dates (no names, no personal data)."""
     seen, dups, weekend = set(), set(), set()
     for prop in adhoc.DATE_PROPERTIES:
         day = adhoc.parse_date(deal.get(prop))
-        if day is None:
+        if day is None or (since and day < since):
             continue
         if day in seen:
             dups.add(day)
@@ -158,12 +158,16 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
     # The pipeline never books a session in the past (whatever the stage). Today or later is future. Past dates
     # are skipped when at least one date is today or later; a deal with no such date is held.
     codes, dates = adhoc.session_codes(deal, None, today)
-    holds += [c for c in codes if c not in UNUSED_CODES and c != "session_date_past"]
-    details = date_details(deal, today)
-    plan["details"] = {code: days for code, days in details.items() if code in holds}
+    skip_codes = {"session_date_past", "session_date_weekend", "session_date_duplicate"}
+    holds += [c for c in codes if c not in UNUSED_CODES and c not in skip_codes]
     sessions = deal_sessions(deal)
     past = sorted({d for d in dates if d < today})
-    if past and any(d >= today for d in dates):
+    mixed = bool(past) and any(d >= today for d in dates)
+    # weekend / duplicate apply only to dates that are actually booked (skipped past dates are not judged)
+    details = date_details(deal, today if mixed else None)
+    holds += [c for c in ("session_date_duplicate", "session_date_weekend") if c in details]
+    plan["details"] = {code: days for code, days in details.items() if code in holds}
+    if mixed:
         plan["skippedPast"] = [d.isoformat() for d in past]
         flags.append("past_dates_skipped")
         sessions = [(d, t) for d, t in sessions if d >= today]
