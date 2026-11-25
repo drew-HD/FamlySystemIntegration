@@ -69,7 +69,9 @@ CREATE TABLE IF NOT EXISTS adhoc_jobs (
     reask_count INTEGER NOT NULL DEFAULT 0,
     question TEXT,
     candidate_child_id TEXT,
-    match_decision TEXT
+    match_decision TEXT,
+    write_sent INTEGER NOT NULL DEFAULT 0,
+    outcomes TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS adhoc_one_active_per_deal
     ON adhoc_jobs (deal_id) WHERE status IN ('queued', 'awaiting_approval', 'writing');
@@ -80,12 +82,13 @@ CREATE INDEX IF NOT EXISTS adhoc_status ON adhoc_jobs (status, created_at);
 _ADDED_COLUMNS = (
     ("approval_nonce", "TEXT"), ("approved_hash", "TEXT"), ("approval_ref", "TEXT"),
     ("reask_count", "INTEGER NOT NULL DEFAULT 0"), ("question", "TEXT"), ("candidate_child_id", "TEXT"),
-    ("match_decision", "TEXT"),
+    ("match_decision", "TEXT"), ("write_sent", "INTEGER NOT NULL DEFAULT 0"), ("outcomes", "TEXT"),
 )
 
 _UPDATABLE = {"mode", "plan_hash", "plan_json", "holds", "flags", "child_id", "last_error_code", "approval_nonce",
-              "approved_hash", "approval_ref", "reask_count", "question", "candidate_child_id", "match_decision"}
-_JSON_FIELDS = {"holds", "flags"}
+              "approved_hash", "approval_ref", "reask_count", "question", "candidate_child_id", "match_decision",
+              "outcomes"}
+_JSON_FIELDS = {"holds", "flags", "outcomes"}
 
 
 @dataclass
@@ -112,6 +115,8 @@ class Job:
     question: str | None = None            # what an awaiting_approval job is asking: "plan" or "match"
     candidate_child_id: str | None = None  # the Famly child a "match" question offers
     match_decision: str | None = None      # "confirmed" (the candidate is the child) | "new" (create a new child)
+    write_sent: bool = False               # 1 once the booking request has been SENT: a job never sends a second
+    outcomes: list | None = None           # codes of what the write phase did
 
 
 def store_path() -> Path:
@@ -169,7 +174,8 @@ def _to_job(row: sqlite3.Row) -> Job:
         updated_at=row["updated_at"], holds=_loads(row["holds"]), flags=_loads(row["flags"]),
         plan=_loads(row["plan_json"]), approval_nonce=row["approval_nonce"], approved_hash=row["approved_hash"],
         approval_ref=row["approval_ref"], reask_count=row["reask_count"], question=row["question"],
-        candidate_child_id=row["candidate_child_id"], match_decision=row["match_decision"])
+        candidate_child_id=row["candidate_child_id"], match_decision=row["match_decision"],
+        write_sent=bool(row["write_sent"]), outcomes=_loads(row["outcomes"]))
 
 
 # --------------------------------------------------------------------------- #
@@ -302,6 +308,15 @@ def transition(job_id: str, from_status: str, to_status: str, **fields) -> bool:
             f"UPDATE adhoc_jobs SET status = ?, claimed_at = NULL, updated_at = ?"
             f"{', ' + columns if columns else ''} WHERE id = ? AND status = ?",
             (to_status, _now(), *values, job_id, from_status))
+    return cursor.rowcount == 1
+
+
+def mark_write_sent(job_id: str) -> bool:
+    """Persisted BEFORE the booking request is sent, atomically: True only for the one call that sets it. A job
+    that already has it never sends a second booking."""
+    with _open() as connection:
+        cursor = connection.execute(
+            "UPDATE adhoc_jobs SET write_sent = 1, updated_at = ? WHERE id = ? AND write_sent = 0", (_now(), job_id))
     return cursor.rowcount == 1
 
 

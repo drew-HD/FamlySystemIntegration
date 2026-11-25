@@ -1,4 +1,7 @@
-"""The ad hoc worker, step 2: DRY MODE with the Slack gate. READ-ONLY: it never writes to Famly or HubSpot.
+"""The ad hoc worker, steps 2 and 3a: the Slack gate, and (live mode) the writes for an EXISTING child. In dry mode it
+is READ-ONLY: it never writes to Famly or HubSpot. Live mode books, tags and removes the end date only after a Slack
+Approve, and only when the re-plan hash equals the approved one; a plan that needs a NEW child is held
+(`new_child_not_built`) until step 3b.
 
 For each queued deal it runs the planner (actions/adhoc_plan) and then:
 
@@ -11,7 +14,7 @@ For each queued deal it runs the planner (actions/adhoc_plan) and then:
     re-queues it; the worker re-plans and, if the plan hash is unchanged, finishes `dry_done` (live mode will
     write here, in a later step). A plan that changed after approval is asked again once, then `needs_review`.
 
-Anyone in the channel may click (see approval.py). `live` mode is refused until the writes exist.
+Anyone in the channel may click (see approval.py).
 
 A job from the WEBHOOK must be an Approved deal in the Ad Hoc pipeline, else it is held `stage_not_eligible` (a CLI
 job may be any stage; the plan shows the flag `stage_not_approved`). Returns codes and ids only; a worker error is
@@ -28,7 +31,7 @@ from typing import Any, Callable
 
 from actions.adhoc_plan import planner
 
-from . import config, messages, store
+from . import config, messages, store, writes
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,7 @@ POLL_SECONDS = 30.0
 STAGE_NOT_ELIGIBLE = "stage_not_eligible"
 MATCH_HOLD = "parent_email_matches_a_different_child"
 PLAN_UNSTABLE = "plan_unstable"
+NEW_CHILD_NOT_BUILT = "new_child_not_built"          # until step 3b, live mode cannot create a child
 
 
 class _Silent:
@@ -53,6 +57,7 @@ class Deps:
     plan_deal: Callable[..., dict]
     child_name: Callable[[str], str | None] = lambda child_id: None     # Famly name, memory only, for the match question
     notifier: Any = None
+    writes: Any = None            # actions.adhoc.writes.FamlyWriter, live mode only
 
     def __post_init__(self):
         if self.notifier is None:
@@ -64,7 +69,13 @@ def default_deps() -> Deps:
 
     from .notifier import SlackNotifier
     readers = Readers()
-    return Deps(plan_deal=readers.plan_deal, child_name=readers.child_name, notifier=SlackNotifier())
+    famly_writer = None
+    if config.mode() == config.MODE_LIVE:                  # the write clients exist only in live mode
+        from core.client import GraphQLClient
+        from core.rest_client import RestClient
+        famly_writer = writes.FamlyWriter(GraphQLClient(), RestClient())
+    return Deps(plan_deal=readers.plan_deal, child_name=readers.child_name, notifier=SlackNotifier(),
+                writes=famly_writer)
 
 
 def recover() -> int:
@@ -80,9 +91,6 @@ def run_once(deps: Deps | None = None) -> dict:
     run_mode = config.mode()
     if run_mode == config.MODE_OFF:
         return {"ran": False, "mode": run_mode}
-    if run_mode == config.MODE_LIVE:
-        logger.error("adhoc: ADHOC_MODE=live is not built yet; the worker does nothing")
-        return {"ran": False, "mode": run_mode, "refused": "live_not_built"}
     job = store.claim_next()
     if job is None:
         return {"ran": False, "mode": run_mode}
@@ -121,6 +129,9 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> None:
     holds = list(plan["holds"])
     if job.source == "webhook" and planner.GO_STAGE != _norm(plan.get("stage")):
         holds.append(STAGE_NOT_ELIGIBLE)
+    if (run_mode == config.MODE_LIVE and not plan["match"]["childIds"] and MATCH_HOLD not in holds
+            and "purchase" in plan):
+        holds.append(NEW_CHILD_NOT_BUILT)          # step 3a writes for an existing child only
     holds = sorted(set(holds))
     flags = [f for f in plan["flags"] if not (job.source == "webhook" and f == "stage_not_approved")]
     digest = plan_hash(plan)
@@ -137,8 +148,10 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> None:
         return
 
     if job.approved_hash == digest:
-        # Approved in Slack and unchanged on the re-check. Dry mode: nothing is written. (Live mode writes here,
-        # in a later step.)
+        # Approved in Slack and unchanged on the re-check. Live mode writes; dry mode writes nothing.
+        if run_mode == config.MODE_LIVE:
+            _write_phase(job, deps, plan, digest)
+            return
         store.set_status(job.id, store.DRY_DONE, last_error_code=None)
         deps.notifier.notice(f"✅ {messages.DRY}Ad hoc approved for deal {messages.deal_link(job.deal_id)}. "
                              "Nothing was written (dry run).")
@@ -150,6 +163,53 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> None:
                              "approval, so it needs a person to look at it.")
         return
     _ask_plan(job, deps, plan, digest, run_mode, changed)
+
+
+def _end(job, deps, status: str, code: str, plan: dict | None = None, problems: list | None = None) -> None:
+    store.set_status(job.id, status, last_error_code=code)
+    deps.notifier.notice(messages.done_text(plan, [], {}, problems or [code], "live") if plan
+                         else f"⚠️ Ad hoc deal {messages.deal_link(job.deal_id)}: "
+                              f"{messages.SENTENCES.get(code, code)}")
+
+
+def _write_phase(job, deps, plan: dict, digest: str) -> None:
+    """LIVE: write the approved plan for an EXISTING child. Book first (the money step), then the administrative
+    tag and end date. Every request is sent once and never retried; an unclear outcome ends `needs_review`."""
+    if deps.writes is None:
+        raise RuntimeError("no Famly writer configured")
+    child_id = plan["match"]["childIds"][0]
+    purchase = plan["purchase"]
+    store.set_status(job.id, store.WRITING, plan_hash=digest)
+    if not store.mark_write_sent(job.id):          # persisted BEFORE the request: a job never books twice
+        _end(job, deps, store.NEEDS_REVIEW, "duplicate_write_blocked")
+        return
+    outcomes: list[str] = []
+    try:
+        result = deps.writes.book(child_id, purchase)
+    except writes.BookingRejected as exc:
+        _end(job, deps, store.FAILED, exc.code)
+        return
+    except writes.BookingUnknown:
+        _end(job, deps, store.NEEDS_REVIEW, "booking_outcome_unknown")
+        return
+    outcomes.append(f"booked:{len(purchase['sessionBookings'])}")
+    store.update(job.id, outcomes=outcomes)
+    problems: list[str] = []
+    if not result.verified:
+        problems.append("booking_mismatch:" + "+".join(result.mismatches))
+    results: dict[str, str] = {}
+    if plan["adHocOnly"]:
+        results["tag"] = deps.writes.tag(child_id, plan["siteId"])
+        results["end"] = deps.writes.remove_end_date(child_id)
+        outcomes += [results["tag"], results["end"]]
+        store.update(job.id, outcomes=outcomes)
+        if results["tag"] not in (writes.TAG_ADDED, writes.TAG_PRESENT):
+            problems.append(results["tag"])
+        if results["end"] not in (writes.END_REMOVED, writes.END_NONE):
+            problems.append(results["end"])
+    store.set_status(job.id, store.NEEDS_REVIEW if problems else store.DONE,
+                     last_error_code=",".join(problems) or None)
+    deps.notifier.notice(messages.done_text(plan, result.purchase_ids, results, problems, "live"))
 
 
 def _nonce() -> str:

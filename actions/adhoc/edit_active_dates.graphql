@@ -1,0 +1,27 @@
+# THE END-DATE WRITE (INTERNAL API) of the ad hoc worker. childActiveDates carries ONLY startDate, which removes the
+# end date so Famly applies its automatic one; the worker never sends endInfo. Proven by adhoc-probe-write.
+mutation EditChildActiveDates($childId: ChildId!, $childActiveDates: ChildActiveDatesInput!, $isParent: Boolean!) {
+  attendance {
+    childActiveDates {
+      updateChildActiveDates(childId: $childId, childActiveDates: $childActiveDates) {
+        ...ChildActiveDates
+      }
+    }
+  }
+}
+
+fragment ChildActiveDates on ChildActiveDatesType {
+  startDate
+  endInfo { ...ChildActiveDatesEndInfo }
+}
+
+fragment ChildActiveDatesEndInfo on ChildActiveDatesEndInfoType {
+  endDate
+  additionalInfo @skip(if: $isParent)
+  reasonForLeaving @skip(if: $isParent) { ...ReasonForLeaving }
+}
+
+fragment ReasonForLeaving on ReasonForLeaving {
+  id
+  name
+}
