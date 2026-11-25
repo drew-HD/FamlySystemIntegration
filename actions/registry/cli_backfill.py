@@ -11,6 +11,9 @@ HELP = ("READ-ONLY on Famly and HubSpot: fill the children registry (var/, gitig
 def add_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--confirm", action="store_true", help="Write to the registry (default: dry run)")
     parser.add_argument("--out", metavar="PATH", help="Also write a CSV of ids and codes (use reports/)")
+    parser.add_argument("--deals-out", metavar="PATH",
+                        help="Write the deal ids that have no Famly child, one per line (use reports/). "
+                             "Left Nursery, Ad Hoc Completed and Closed Lost deals are left out. Never stored")
 
 
 def handle(args: argparse.Namespace):
@@ -22,6 +25,13 @@ def handle(args: argparse.Namespace):
     hubspot = audit.ReadOnlyHubSpot()
     gql = audit.ReadOnlyGraphQL(urn_runner._public_client())
     summary, report = backfill.run(hubspot, gql, confirm=args.confirm)
+    no_child = summary.pop("_no_child_deals")
+    if args.deals_out:
+        by_stage = {}
+        for _, kind, stage in no_child:
+            by_stage[f"{kind}:{stage or 'unknown'}"] = by_stage.get(f"{kind}:{stage or 'unknown'}", 0) + 1
+        summary["deals_out"] = {"rows": backfill.write_deal_list(args.deals_out, no_child),
+                                "by_stage": dict(sorted(by_stage.items()))}
     if args.out:
         summary["csv"] = {"rows": backfill.write_csv(args.out, report)}
     summary["requests"] = {"hubspot": hubspot.calls, "famly": gql.calls}
