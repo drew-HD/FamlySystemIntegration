@@ -73,6 +73,13 @@ class ServiceLoopTests(unittest.TestCase):
             worker.run_forever(5.0, should_stop=lambda: state["stop"], sleep=lambda s: None)
         self.assertEqual(len(results), 2)      # exactly one job ran, and it ran to the end
 
+    def test_recover_failure_is_retried_and_no_job_runs_until_it_succeeds(self):
+        loop = Loop([True])
+        with mock.patch.object(worker, "run_once", loop.run_once), \
+                mock.patch.object(worker, "recover", side_effect=[OSError("x"), 0]) as rec:
+            worker.run_forever(5.0, should_stop=loop.stop, sleep=loop.sleeps.append)
+        self.assertEqual((rec.call_count, loop.calls, loop.sleeps), (2, 1, [worker.ERROR_BACKOFF_SECONDS]))
+
     def test_sigterm_handler_sets_stop(self):
         stop = worker._Stop()
         self.assertFalse(stop())
