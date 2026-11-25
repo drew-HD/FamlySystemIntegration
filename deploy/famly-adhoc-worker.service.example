@@ -1,0 +1,25 @@
+# TEMPLATE ONLY. Drew installs it on the droplet (not done by the repo or by any agent):
+#   sudo cp deploy/famly-adhoc-worker.service.example /etc/systemd/system/famly-adhoc-worker.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now famly-adhoc-worker
+# Check the EnvironmentFile and User against `systemctl cat famly-onboard-worker` and change them to match.
+# ADHOC_MODE (off | dry | live) comes from the env file; the worker reads the process environment each loop, but that is fixed at start, so restart the unit after editing .env.
+# Restart this unit after a code pull (git pull in /home/drew/famly).
+[Unit]
+Description=Famly ad hoc worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=drew
+WorkingDirectory=/home/drew/famly
+# Same env file as famly-onboard-worker (placeholder path: copy the line from that unit).
+EnvironmentFile=/home/drew/famly/.env
+ExecStart=/home/drew/famly/.venv/bin/python main.py adhoc-worker
+Restart=always
+RestartSec=5
+# SIGTERM lets the worker finish the current job before it exits; allow time for a Famly write.
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

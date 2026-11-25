@@ -14,6 +14,8 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 
 - Ad hoc (on main unless noted): read-only `adhoc-audit`, `adhoc-dry-run`, `adhoc-probe-read`; test-children-only `create-test-children` / `adhoc-probe-write`; worker steps 1-2 (jobs table, dry mode, Slack gate; ADHOC_MODE default off, prod dry). Step 3a (live writes for an EXISTING child: book, tag, end date) on branch adhoc-writes, fakes only, NOT run live; new-child creation (3b) and the intake webhook are not built. Design: docs/adhoc_design.md.
 
+- Ad hoc worker service (branch adhoc-worker-service): `run_forever` is a robust loop (drain, idle sleep 10 s, errors by type, clean SIGTERM); template `deploy/famly-adhoc-worker.service.example`, NOT installed; restart the unit after editing `.env`.
+
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
 - QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_ALLOWED_INSTITUTIONS.
