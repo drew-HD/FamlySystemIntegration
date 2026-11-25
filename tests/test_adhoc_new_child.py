@@ -549,7 +549,7 @@ class ResumeContactsTests(NewChildCase):
 
     def resume_plan(self):
         p = new_plan()
-        p["match"] = {"via": "allocated_urn", "childIds": ["c-old"]}
+        p["match"] = {"via": "allocated_urn", "childIds": ["c-old"], "urn": URN}
         p["resumeContacts"] = True
         p["purchase"]["childId"] = "c-old"
         p["steps"] = ["create_contacts", "assign_ad_hoc_only_tag", "remove_end_date_if_set", "book_1_sessions"]
@@ -560,8 +560,15 @@ class ResumeContactsTests(NewChildCase):
         job, _ = self.go(self.resume_plan())
         self.assertEqual(self.kinds(), ["contact", "contact"])               # no second child
         self.assertEqual([c[0] for c in self.writes.calls], ["book", "tag", "end"])
-        self.assertEqual(self.deal_writer.calls, [("child_id", "1", "c-old")])    # URN already on the deal
+        self.assertEqual(self.deal_writer.calls, [("urn", "1", URN), ("child_id", "1", "c-old")])  # both onto the deal
         self.assertEqual((job.status, job.child_id), (store.DONE, "c-old"))
+
+    def test_a_failed_urn_write_on_a_resume_is_a_problem_code_and_the_job_carries_on(self):
+        self.earlier_job()
+        self.deal_writer = FakeDealWriter(self.events, urn_fail=True)
+        job, _ = self.go(self.resume_plan())
+        self.assertEqual([c[0] for c in self.writes.calls], ["book", "tag", "end"])     # the child exists: still booked
+        self.assertEqual((job.status, job.last_error_code), (store.NEEDS_REVIEW, "urn_hubspot_write_failed"))
 
     def test_a_parent_already_on_the_child_is_looked_up_first_and_not_created_again(self):
         self.earlier_job(outcomes=["hubspot:childid_written"])               # stopped before any contact outcome
