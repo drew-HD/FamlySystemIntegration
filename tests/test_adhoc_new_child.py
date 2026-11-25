@@ -590,6 +590,12 @@ class ResumeContactsTests(NewChildCase):
         self.assertEqual((job.status, job.last_error_code, self.sent, self.writes.calls),
                          (store.NEEDS_REVIEW, "plan_changed", [], []))
 
+    def test_a_resume_is_rechecked_at_write_time_and_stops_if_contacts_were_recorded_since(self):
+        self.earlier_job(outcomes=["contact:h1:created"])             # recorded after the plan was approved
+        job, _ = self.go(self.resume_plan())
+        self.assertEqual((job.status, job.last_error_code, self.sent, self.writes.calls),
+                         (store.NEEDS_REVIEW, "plan_changed", [], []))
+
     def test_the_gate_message_says_contacts_will_be_created_for_the_existing_child(self):
         self.earlier_job()
         self.go(self.resume_plan())

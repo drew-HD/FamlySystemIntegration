@@ -383,6 +383,10 @@ def _resume_contacts(job, deps, plan, outcomes: list, problems: list, child_id: 
     if (deps.public is None or deps.famly_factory is None or deps.deal_context is None
             or deps.deal_writer is None):
         raise RuntimeError("no Famly create client configured")
+    earlier = store.earlier_creates_for_deal(job.deal_id, child_id, job.id)     # re-checked at the point of writing
+    if not earlier or any(str(o).startswith("contact:") for e in earlier for o in e.outcomes or []):
+        _end(job, deps, store.NEEDS_REVIEW, "plan_changed")   # the approval was for a child with no contacts yet
+        return False
     deal, contacts = deps.deal_context(job.deal_id)       # names and emails: memory only, for this call
     if not _deal_unchanged(job, deps, plan, deal, contacts):
         return False
