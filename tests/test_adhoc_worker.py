@@ -3,6 +3,7 @@ child-match question, click safety (nonce, atomic, stale), and that nothing here
 worker's only dependencies are a planner function and a notifier). Fake data only."""
 
 import argparse
+import logging
 import os
 import tempfile
 import unittest
@@ -439,3 +440,91 @@ class CliTests(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExceptionAfterWriteTests(LiveWriteTests):
+    """An exception after the booking request was sent ends needs_review; before it, failed. Never retried."""
+
+    SECRET = "Jane Doe jane@example.com"
+
+    def run_checked(self, w, notifier_raises=False):
+        with self.assertLogs("actions.adhoc.worker", level="INFO") as cm:
+            job = self.approved_run(w)
+        return job, "\n".join(cm.output)
+
+    def assert_clean(self, job, logs):
+        self.assertNotIn("Jane", logs)
+        self.assertNotIn("example.com", logs)
+        self.assertNotIn("Jane", repr(job))
+        self.assertNotIn("example.com", repr(job))
+        self.assertNotIn("Jane", "".join(m["text"] for m in self.notifier.sent))
+
+    def test_exception_after_booking_is_needs_review_and_is_never_rebooked(self):
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, logging.root.manager.disable)
+
+        class W(FakeWrites):
+            def tag(s, child_id, institution_id):
+                s.calls.append(("tag", child_id, institution_id))
+                raise RuntimeError(ExceptionAfterWriteTests.SECRET)
+        w = W()
+        job, logs = self.run_checked(w)
+        self.assertEqual((job.status, job.last_error_code, job.write_sent),
+                         (store.NEEDS_REVIEW, "worker_error_after_write", True))
+        self.assertIn("RuntimeError", logs)
+        self.assert_clean(job, logs)
+        self.assertIn("NOT sent again", self.notifier.sent[-1]["text"])
+        self.assertIsNone(store.claim_next())                       # never re-claimed
+        worker.run_once(self.deps(plan()))
+        self.assertEqual([c[0] for c in w.calls].count("book"), 1)  # no second book call
+
+    def test_notifier_raising_in_the_done_notice_after_booking_is_needs_review(self):
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, logging.root.manager.disable)
+        w = FakeWrites()
+
+        class Boom(FakeNotifier):
+            def notice(s, text):
+                raise ValueError(ExceptionAfterWriteTests.SECRET)
+        store.enqueue("1", "live")
+        self.notifier = Boom()
+        deps = self.deps(plan())
+        deps.writes = w
+        worker.run_once(deps)
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        with self.assertLogs("actions.adhoc.worker", level="INFO") as cm:
+            worker.run_once(deps)                                    # must not raise
+        job = store.latest_for_deal("1")
+        self.assertEqual((job.status, job.last_error_code, job.write_sent),
+                         (store.NEEDS_REVIEW, "worker_error_after_write", True))
+        logs = "\n".join(cm.output)
+        self.assertIn("ValueError", logs)
+        self.assert_clean(job, logs)
+        self.assertEqual([c[0] for c in w.calls].count("book"), 1)
+        self.assertIsNone(store.claim_next())
+
+    def test_exception_before_the_booking_was_sent_is_still_failed(self):
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, logging.root.manager.disable)
+        w = FakeWrites()
+        store.enqueue("1", "live")
+        deps = self.deps(plan())
+        deps.writes = w
+        worker.run_once(deps)
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        with mock.patch.object(store, "mark_write_sent", side_effect=RuntimeError(self.SECRET)), \
+                self.assertLogs("actions.adhoc.worker", level="INFO") as cm:
+            worker.run_once(deps)
+        job = store.latest_for_deal("1")
+        self.assertEqual((job.status, job.last_error_code, job.write_sent), (store.FAILED, "worker_error", False))
+        self.assertEqual(w.calls, [])
+        self.assert_clean(job, "\n".join(cm.output))
+
+    def test_a_failing_status_update_does_not_escape(self):
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, logging.root.manager.disable)
+        store.enqueue("1", "live")
+        deps = self.deps(plan())
+        with mock.patch.object(worker, "_process", side_effect=RuntimeError(self.SECRET)), \
+                mock.patch.object(store, "set_status", side_effect=OSError(self.SECRET)):
+            worker.run_once(deps)                                    # must not raise

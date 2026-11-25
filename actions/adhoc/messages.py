@@ -29,6 +29,8 @@ def percent(fraction) -> str:
 
 # Plain-English sentences for the hold codes a person can act on.
 SENTENCES = {
+    "worker_error_after_write": "The worker hit an error after the booking was sent, so it may or may not be complete. "
+                                "Check the child's bookings in Famly. The booking was NOT sent again.",
     "stage_not_eligible": "The deal is not at Approved in the Ad Hoc pipeline.",
     "not_ad_hoc_pipeline": "The deal is not in the Ad Hoc pipeline.",
     "site_unmapped": "The deal's location is not Westminster, City or Canada Water.",

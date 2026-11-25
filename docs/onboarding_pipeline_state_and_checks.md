@@ -127,3 +127,10 @@ Names, emails, phones, addresses and dates of birth are read from HubSpot at run
 
 ## 8. Not built
 Bill payer (existence check by email, addChildren), plans via the existing plan queue, deposit (unpaid at Deposit Pending, marked paid for later stages, none for Left Nursery, idempotency check first), invoice, contract upload from the signed HubSpot quote, sibling linking, backfill batching with batch-level approval, app access (Parent role after deposit paid, with a label filter for non-parents).
+
+## 9. Ad hoc worker service (`famly-adhoc-worker`)
+- Template: `deploy/famly-adhoc-worker.service.example` (unit files are not kept in the repo; Drew installs it, same env file as the onboarding worker; the venv and env-file paths in it are placeholders to confirm with `systemctl cat famly-onboard-worker`).
+- Install: copy to `/etc/systemd/system/famly-adhoc-worker.service`, `systemctl daemon-reload`, `systemctl enable --now famly-adhoc-worker`. Restart it after each pull that changes runtime code.
+- Logs: `journalctl -u famly-adhoc-worker` (UTC). The first line gives the mode and the store file name only. Errors are logged by exception type only.
+- `ADHOC_MODE` is read from the process environment on every loop (tests and any in-process change take effect at once), but systemd and `load_dotenv` set the environment only at start, so after editing `.env` run `systemctl restart famly-adhoc-worker`. `off` keeps the worker idle but polling.
+- Behaviour: recovers in-flight jobs once at start; drains the queue without sleeping and sleeps 10 s (`--poll`) only when idle; an error in an iteration is logged and backed off 5 s; SIGTERM or SIGINT finishes the current job, then exits.

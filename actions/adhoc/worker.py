@@ -35,7 +35,7 @@ from . import config, messages, store, writes
 
 logger = logging.getLogger(__name__)
 
-POLL_SECONDS = 30.0
+POLL_SECONDS = 10.0
 STAGE_NOT_ELIGIBLE = "stage_not_eligible"
 MATCH_HOLD = "parent_email_matches_a_different_child"
 PLAN_UNSTABLE = "plan_unstable"
@@ -100,17 +100,93 @@ def run_once(deps: Deps | None = None) -> dict:
         _process(job, deps, run_mode)
     except Exception as exc:  # noqa: BLE001 - a job must never die silently
         logger.error("adhoc: job %s hit %s", job.id, type(exc).__name__)   # type only: text could hold data
-        store.set_status(job.id, store.FAILED, last_error_code="worker_error")
+        _fail_job(job, deps)
     final = store.get(job.id)
     return {"ran": True, "mode": run_mode, "jobId": job.id, "dealId": job.deal_id, "status": final.status,
             "code": final.last_error_code, "holds": final.holds, "flags": final.flags}
 
 
-def run_forever(poll: float = POLL_SECONDS, deps: Deps | None = None) -> None:
-    recover()
-    while True:
-        if not run_once(deps)["ran"]:
-            time.sleep(poll)
+class _Stop:
+    """SIGTERM / SIGINT set this; the loop checks it only between jobs, so a job is never cut off mid-way."""
+
+    def __init__(self):
+        self.requested = False
+
+    def __call__(self) -> bool:
+        return self.requested
+
+    def request(self, *_args) -> None:
+        self.requested = True
+
+
+ERROR_BACKOFF_SECONDS = 5.0
+
+
+def _fail_job(job: store.Job, deps: Deps) -> None:
+    """After an exception: if the booking request was already SENT the job is `needs_review` (a person must check
+    Famly; Retry must not look safe), else `failed`. Nothing here may raise out of the loop."""
+    sent = False
+    try:
+        sent = bool(store.get(job.id).write_sent)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("adhoc: job %s re-read hit %s", job.id, type(exc).__name__)
+        sent = True                    # cannot tell: treat as possibly booked, the safe side
+    try:
+        if sent:
+            store.set_status(job.id, store.NEEDS_REVIEW, last_error_code="worker_error_after_write")
+        else:
+            store.set_status(job.id, store.FAILED, last_error_code="worker_error")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("adhoc: job %s status update hit %s", job.id, type(exc).__name__)
+        return
+    if sent:
+        try:
+            deps.notifier.notice(f"⚠️ Ad hoc deal {messages.deal_link(job.deal_id)}: "
+                                 f"{messages.SENTENCES['worker_error_after_write']}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("adhoc: job %s notice hit %s", job.id, type(exc).__name__)
+
+
+def run_forever(poll: float = POLL_SECONDS, deps: Deps | None = None, *, should_stop: Callable[[], bool] | None = None,
+                sleep: Callable[[float], None] = time.sleep, install_signals: bool | None = None) -> None:
+    """The service loop. Recovers once, then: a job ran -> loop again at once (drain); idle -> sleep `poll`; an
+    exception in an iteration -> log its TYPE only, back off, continue. SIGTERM/SIGINT finish the current job and
+    return. The mode is read fresh each iteration (off = idle but still polling)."""
+    stop = _Stop()
+    if should_stop is None:
+        should_stop = stop
+        install_signals = True if install_signals is None else install_signals
+    if install_signals:
+        import signal
+        signal.signal(signal.SIGTERM, stop.request)
+        signal.signal(signal.SIGINT, stop.request)
+    logger.info("adhoc worker started: mode=%s store=%s", config.mode(), store.store_path().name)
+    recovered = False
+    last_mode = None
+    while not should_stop():
+        try:
+            if not recovered:
+                try:
+                    recover()
+                    recovered = True
+                except Exception as exc:  # noqa: BLE001 - retried on each later iteration
+                    logger.error("adhoc: recover hit %s", type(exc).__name__)
+                    sleep(ERROR_BACKOFF_SECONDS)       # no job runs until recovery has succeeded
+                    continue
+            current = config.mode()
+            if current != last_mode:
+                if current == config.MODE_OFF:
+                    logger.info("adhoc worker idle: ADHOC_MODE is off (still polling)")
+                elif last_mode is not None:
+                    logger.info("adhoc worker mode is now %s", current)
+                last_mode = current
+            if run_once(deps)["ran"]:
+                continue
+            sleep(poll)
+        except Exception as exc:  # noqa: BLE001 - never exit on an iteration error; type only
+            logger.error("adhoc: loop iteration hit %s", type(exc).__name__)
+            sleep(ERROR_BACKOFF_SECONDS)
+    logger.info("adhoc worker stopped cleanly")
 
 
 def _process(job: store.Job, deps: Deps, run_mode: str) -> None:
