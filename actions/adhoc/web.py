@@ -60,4 +60,16 @@ def handle(payload: dict) -> tuple[dict, int]:
     outcome = {store.CREATED: OUTCOME_QUEUED, store.ALREADY_QUEUED: OUTCOME_ALREADY_QUEUED,
                store.ALREADY_DONE: OUTCOME_ALREADY_DONE}[result.outcome]
     logger.info("adhoc webhook: outcome=%s deal=%s job=%s", outcome, deal_id, result.job.id)
+    if outcome == OUTCOME_ALREADY_DONE:
+        _blocked_notice(deal_id, result.job)
     return _data(outcome, result.job), 200
+
+
+def _blocked_notice(deal_id: str, job: store.Job) -> None:
+    """Tell people a deal that was already pushed to Famly was sent again and blocked. Never changes the reply."""
+    try:
+        from .messages import blocked_text
+        from .notifier import SlackNotifier
+        SlackNotifier().notice(blocked_text(deal_id, job.updated_at))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("adhoc webhook: blocked notice hit %s", type(exc).__name__)

@@ -2,6 +2,7 @@
 
 | Task | Branch | Status |
 |---|---|---|
+| Ad hoc: `--reopen-done` and a Slack notice when a done deal is blocked | adhoc-reopen | Built, fakes only; waiting for Drew's go to merge. |
 | Ad hoc: famly_plan_status on the ad hoc deal after a booking (plan_created / needs_attention) | adhoc-plan-status | Built, fakes only; merged (224b639); live test on deal 68715656456 pending. |
 | Children registry (var/, gitignored) + rule edits; workers check it before creating; same-child Slack question; operations joins ad hoc child; ad hoc books for operations child | children-registry, registry-deal-list | Stage 1 merged (e750f5d). Backfill now also lists deals with no Famly child (--deals-out, closed stages left out; never stored). Registry filled in prod (353 children); gap list in prod reports/registry_to_check_2026-11-25.csv. Name rules merged; Weekend School deal type (branch registry-weekend-school). Stages 2+3 merged (57c31a5); live test pending. Then: Drew creates famly_followup; live test. Stage 4 (operations joins ad hoc child) later. |
 | Ad hoc new-child fixes: fresh roster read-back, URN and child id written to the deal, resume contacts | adhoc-newchild-fixes | Merged (reviewed, approved). Next: Drew restarts `famly-adhoc-worker`, then recover deal 67661137730 (child HD0001CL exists in Famly with no parent and no booking). |

@@ -142,12 +142,27 @@ REGISTRY_WORDS = {
 }
 
 
-def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_name: str | None = None) -> str:
+REOPEN_WARNING = ("⚠️ Manual re-run: this deal was already pushed to Famly. Check the child's bookings in Famly "
+                  "before approving.")
+
+
+def blocked_text(deal_id: str, done_at: str | None) -> str:
+    """A done deal was sent again by the webhook and blocked (ids only)."""
+    when = f" (job done on {long_date(done_at)})" if done_at else ""
+    return (f"⚠️ Ad hoc deal {deal_link(deal_id)} was sent again, but its sessions were already pushed to Famly"
+            f"{when}, so it was blocked. To re-run it: `python main.py adhoc-enqueue --deal-id {deal_id} "
+            "--reopen-done`")
+
+
+def gate_text(plan: dict, digest: str, mode: str, changed: bool = False, child_name: str | None = None,
+              reopen: bool = False) -> str:
     """The plan approval message. For an EXISTING child it carries the Famly child's name and id (Drew,
     2026-11-24); `child_name` comes from memory at post time and is never stored."""
     dry = DRY if mode == "dry" else ""
     n = len(plan["bookings"])
     lines = [f"*{dry}Ad hoc approval: book {n} session{'s' if n != 1 else ''}*"]
+    if reopen:
+        lines.append(REOPEN_WARNING)
     if changed:
         lines.append("⚠️ The plan changed since it was last approved; approval is needed again.")
     lines.append(f"Deal: {deal_link(plan['dealId'])} · Site: {site_name(plan.get('site'))}")
