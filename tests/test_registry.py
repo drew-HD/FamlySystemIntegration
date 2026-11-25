@@ -17,7 +17,9 @@ class FakeHubSpot:
         self.deals = deals
 
     def stage_names(self):
-        return {"ops": ("Operations", "Live"), "adhoc": ("Ad Hoc", "Approved")}
+        return {"ops": ("Operations", "Live"), "adhoc": ("Ad Hoc", "Approved"),
+                "left": ("Operations", "Left Nursery"), "lost": ("Ad Hoc", "Closed Lost"),
+                "done": ("Ad Hoc", "Ad Hoc Completed")}
 
     def search_deals(self, filters, properties):
         stages = set(filters[0]["values"])
@@ -138,6 +140,28 @@ class BackfillTests(Base):
         self.assertEqual(summary["codes"][backfill.RECORDED_CHILD_MISSING], 1)
         self.assertEqual(summary["deals_to_link"], {})
         self.assertIsNone(store.by_deal("101"))
+
+    def test_no_child_deals_listed_not_stored_closed_stages_left_out(self):
+        deals = [{"id": "301", "dealstage": "ops"}, {"id": "302", "dealstage": "adhoc"},
+                 {"id": "303", "dealstage": "left"}, {"id": "304", "dealstage": "lost"},
+                 {"id": "305", "dealstage": "done"}]
+        summary, _ = self.run_backfill([child("c1")], deals, confirm=True)
+        listed = summary["_no_child_deals"]
+        self.assertEqual([d for d, _, _ in listed], ["301", "302"])
+        out = Path(self.tmp.name) / "deals.txt"
+        self.assertEqual(backfill.write_deal_list(str(out), listed), 2)
+        self.assertEqual(out.read_text(), "301\n302\n")
+        for deal_id in ("301", "302", "303", "304", "305"):
+            self.assertIsNone(store.by_deal(deal_id))
+        self.assertEqual(store.stats()["children"], 1)
+
+    def test_child_with_closed_stage_deals_is_stored_with_them(self):
+        kids = [child("c1", refs=["303"]), child("c2", name="Testchild Beta", urn="HD0002CW")]
+        deals = [{"id": "303", "dealstage": "left"}, {"id": "304", "dealstage": "lost", "child_urn": "HD0002CW"}]
+        summary, _ = self.run_backfill(kids, deals, confirm=True)
+        self.assertEqual(store.by_deal("303").famly_child_id, "c1")
+        self.assertEqual(store.by_deal("304").famly_child_id, "c2")
+        self.assertEqual(summary["_no_child_deals"], [])
 
     def test_dry_run_writes_nothing(self):
         summary, _ = self.run_backfill([child("c1", refs=["101"])], [{"id": "101", "dealstage": "ops"}])

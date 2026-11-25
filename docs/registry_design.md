@@ -13,7 +13,8 @@ Store: var/children_registry.sqlite3 (gitignored), code in actions/registry/. Ro
 - `actions/registry/store.py`: tables children (Famly id, name, name_key, dob, site_code, source), child_urns, child_deals (kind operations|adhoc), child_emails. A URN or deal on another child is refused (`conflict`), never overwritten.
 - `match.py`: compare() -> exact | similar | none (rules in the module docstring).
 - `backfill.py`: Famly roster (all sites, past and future) + Operations and Ad Hoc deals (famly_childid, child_urn) + done onboard/ad hoc jobs + URN allocations (local stores opened read-only). A deal is linked only when all sources agree on one child.
-- Commands: `registry-backfill [--confirm] [--out reports/x.csv]`, `registry-lookup (--child-id|--urn|--deal-id|--email|--name N --dob D)` (names, ids, URNs and deal ids to the terminal; never DOB or emails), `registry-stats`.
+- The registry holds ONLY children that are in Famly, with every deal that points to them (any stage). A deal with no Famly child is never stored; `--deals-out reports/x.txt` lists those deal ids (Left Nursery, Ad Hoc Completed, Closed Lost left out) to run through the pipeline later.
+- Commands: `registry-backfill [--confirm] [--out reports/x.csv] [--deals-out reports/x.txt]`, `registry-lookup (--child-id|--urn|--deal-id|--email|--name N --dob D)` (names, ids, URNs and deal ids to the terminal; never DOB or emails), `registry-stats`.
 
 ## Drew's decisions (2026-11-25)
 - Exact name (same tokens, any order) + same DOB: join automatically, no question.

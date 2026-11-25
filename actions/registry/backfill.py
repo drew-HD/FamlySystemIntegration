@@ -34,6 +34,9 @@ STORE_CONFLICT = "already_tied_to_another_child"
 CHILD_NO_DOB = "child_without_dob"
 RECORDED_CHILD_MISSING = "recorded_child_not_in_famly"
 
+# Deals with no Famly child in these stages are left out of the --deals-out list (they will not be run again).
+CLOSED_STAGES = {"left nursery", "ad hoc completed", "closed lost"}
+
 
 @dataclass
 class Report:
@@ -96,10 +99,13 @@ def _site_code(child, site_codes: dict) -> str | None:
 
 
 def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict], links: dict,
-          site_codes: dict) -> tuple[dict, Report]:
+          site_codes: dict, stages: dict | None = None) -> tuple[dict, Report]:
     """Work out what to write, without writing. Returns ({"children": [...], "deals": [(deal, child,
     kind)]}, report)."""
     report = Report()
+    from actions.onboard_dry_run import derive
+    stage_of = {str(d["id"]): (stages or {}).get(str(d.get("dealstage")), ("", ""))[1]
+                for d in operations_deals + adhoc_deals}
     kinds = {str(d["id"]): store.OPERATIONS for d in operations_deals}
     kinds.update({str(d["id"]): store.ADHOC for d in adhoc_deals})
 
@@ -158,7 +164,7 @@ def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict],
         if len(found) == 1 and deal_id in kinds:
             offer(deal_id, found[0])
 
-    deals = []
+    deals, no_child = [], []
     for deal_id, kind in sorted(kinds.items()):
         ids = sorted(candidates.get(deal_id, ()))
         if deal_id in broken:
@@ -171,8 +177,11 @@ def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict],
         else:
             report.add(DEAL_NO_CHILD, "", deal_id)
             report.counts[f"{DEAL_NO_CHILD}:{kind}"] += 1
+            if deal_id in stage_of and derive.norm_stage(stage_of[deal_id]) not in CLOSED_STAGES:
+                no_child.append((deal_id, kind, stage_of[deal_id]))
     shared_urns = {urn for urn, ids in by_urn.items() if len(ids) > 1}
-    return {"children": rows, "deals": deals, "site_codes": site_codes, "shared_urns": shared_urns}, report
+    return {"children": rows, "deals": deals, "site_codes": site_codes, "shared_urns": shared_urns,
+            "no_child_deals": no_child}, report
 
 
 def write(plan: dict, report: Report) -> Counter:
@@ -217,7 +226,7 @@ def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = Non
     links = local_links() if links is None else links
     site_codes = _site_codes() if site_codes is None else site_codes
 
-    plan, report = build(children, operations, adhoc, links, site_codes)
+    plan, report = build(children, operations, adhoc, links, site_codes, stages)
     kinds = Counter(kind for _, _, kind in plan["deals"])
     summary = {
         "mode": "confirm" if confirm else "dry_run",
@@ -227,6 +236,7 @@ def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = Non
         "adhoc_deals": len(adhoc),
         "deals_to_link": dict(kinds),
         "codes": dict(sorted(report.counts.items())),
+        "live_deals_without_child": dict(Counter(kind for _, kind, _ in plan["no_child_deals"])),
     }
     if confirm:
         summary["written"] = dict(sorted(write(plan, report).items()))
@@ -234,7 +244,16 @@ def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = Non
         summary["registry"] = store.stats()
     logger.info("registry backfill %s: %s children, %s deals linked", summary["mode"],
                 summary["famly_children"], sum(kinds.values()))
+    summary["_no_child_deals"] = plan["no_child_deals"]
     return summary, report
+
+
+def write_deal_list(path: str, no_child_deals: list) -> int:
+    """Deal ids with no Famly child (closed stages left out), one per line. Ids only; NOT the registry."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(f"{deal_id}\n" for deal_id, _, _ in no_child_deals), encoding="utf-8")
+    return len(no_child_deals)
 
 
 def write_csv(path: str, report: Report) -> int:
