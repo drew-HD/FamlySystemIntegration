@@ -24,6 +24,7 @@ from actions.delete_plans import web as delete_plans_web  # TEMPORARY -- see its
 from actions.adhoc import approval as adhoc_approval
 from actions.onboard import approval as onboard_approval
 from actions.onboard import web as onboard_web
+from actions.adhoc import web as adhoc_web
 from actions.plan_write import approval as plan_write_approval
 from integrations import slack as _slack
 from actions.plan_write import web as plan_write_web
@@ -40,6 +41,7 @@ ACTIONS = {
     urn_lookup_web.ACTION_NAME: urn_lookup_web.handle,  # TEMPORARY backfill utility
     contact_lookup_web.ACTION_NAME: contact_lookup_web.handle,  # read-only HubSpot id linking
     onboard_web.ACTION_NAME: onboard_web.handle,  # enqueue only: no Famly or HubSpot call
+    adhoc_web.ACTION_NAME: adhoc_web.handle,  # enqueue only: no Famly or HubSpot call
     delete_plans_web.ACTION_NAME: delete_plans_web.handle,  # TEMPORARY, DESTRUCTIVE clean-up utility
 }
 
