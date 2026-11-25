@@ -13,9 +13,9 @@ Wants=network-online.target
 Type=simple
 User=drew
 WorkingDirectory=/home/drew/famly
-# Same env file as famly-onboard-worker (placeholder path: copy the line from that unit).
+# Same env file and venv as famly-onboard-worker (checked against `systemctl cat famly-onboard-worker`, 2026-11-25).
 EnvironmentFile=/home/drew/famly/.env
-ExecStart=/home/drew/famly/.venv/bin/python main.py adhoc-worker
+ExecStart=/home/drew/famly/venv/bin/python main.py adhoc-worker
 Restart=always
 RestartSec=5
 # SIGTERM lets the worker finish the current job before it exits; allow time for a Famly write.
