@@ -391,7 +391,14 @@ def _resume_contacts(job, deps, plan, outcomes: list, problems: list, child_id: 
     if not _deal_unchanged(job, deps, plan, deal, contacts):
         return False
     famly = deps.famly_factory()
-    _record_child_id(job, deps, child_id, outcomes, problems)        # the deal may not have the child id yet
+    urn = (plan.get("match") or {}).get("urn")                       # the deal may not have the URN or child id yet
+    if urn:
+        try:
+            outcomes.append(f"hubspot:urn_{deps.deal_writer.ensure_urn(job.deal_id, urn)}")
+        except deal_writeback.WritebackFailed as exc:
+            problems.append(exc.code)                                # the child exists: a problem code, not a stop
+        store.update(job.id, outcomes=outcomes)
+    _record_child_id(job, deps, child_id, outcomes, problems)
     _contacts_and_payer(job, deps, plan, contacts, child_id, famly, outcomes, problems, fresh_child=False)
     return True
 

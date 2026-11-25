@@ -210,6 +210,8 @@ def build_plan(deal: dict, stage: str | None, contacts, index, deps: Deps, today
             extra = [e for e in extra if e != "HOLD:parent_email_matches_a_different_child"]
             flags.append("new_child_confirmed_in_slack")
     plan["match"] = {"via": how, "childIds": ids}
+    if how == "allocated_urn":
+        plan["match"]["urn"] = allocated                 # a resumed child: the worker puts this URN on the deal
     if "HOLD:parent_email_matches_a_different_child" in extra:
         plan["match"]["candidateIds"] = adhoc.email_candidates(contacts, index)
     holds += [e.removeprefix("HOLD:") for e in extra if e.startswith("HOLD:")]

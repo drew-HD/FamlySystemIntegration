@@ -108,6 +108,7 @@ class AllocatedUrnTests(Case):
         made.external_id = "HD0042CW"
         plan = self.planned([made], lambda deal_id: "HD0042CW")
         self.assertEqual((plan["match"]["via"], plan["match"]["childIds"]), ("allocated_urn", ["made"]))
+        self.assertEqual(plan["match"]["urn"], "HD0042CW")            # recorded so a resume can put it on the deal
 
     def test_no_allocation_or_an_urn_nobody_carries_means_no_match(self):
         other = kid("other", emails=(), name="Someone Else", birthday="2020-01-01")
