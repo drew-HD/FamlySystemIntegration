@@ -320,7 +320,11 @@ def _write_phase(job, deps, plan, digest: str) -> None:
             problems.append(results["tag"])
         if results["end"] not in (writes.END_REMOVED, writes.END_NONE):
             problems.append(results["end"])
-    report = _registry_and_followup(job, deps, plan, child_id, new, outcomes)
+    try:
+        report = _registry_and_followup(job, deps, plan, child_id, new, outcomes)
+    except Exception as exc:  # noqa: BLE001 - after the booking: a report problem never leaves the job stuck
+        logger.error("adhoc: job %s registry/follow-up hit %s", job.id, type(exc).__name__)
+        report = [messages.REGISTRY_WORDS["failed"]]
     store.set_status(job.id, store.NEEDS_REVIEW if problems else store.DONE,
                      last_error_code=",".join(problems) or None)
     deps.notifier.notice(messages.done_text(plan, result.purchase_ids, results, problems, "live",

@@ -192,6 +192,19 @@ class LiveTests(TempRegistry, Case):
         self.assertEqual(job.status, store.DONE)
         self.assertIn("could not be updated", self.notifier.sent[-1]["text"])
 
+    def test_an_unexpected_error_in_the_report_step_still_ends_done_with_a_line(self):
+        def boom(child_id):
+            raise RuntimeError("roster gone")
+        self.writes, self.hubspot = FakeWrites(), FakeHubSpot()
+        store.enqueue("1", "live")
+        deps = self.deps(plan())
+        deps.writes, deps.deal_writer, deps.registry, deps.child_details = self.writes, self.hubspot, lookup, boom
+        worker.run_once(deps)
+        approval.handle_click(slack.ACTION_ADHOC_APPROVE, self.notifier.value(), "u")
+        worker.run_once(deps)
+        self.assertEqual(store.latest_for_deal("1").status, store.DONE)
+        self.assertIn("could not be updated", self.notifier.sent[-1]["text"])
+
     def test_a_registry_that_raises_while_writing_is_a_failed_code(self):
         with mock.patch.object(registry, "upsert_child", side_effect=OSError("disk")):
             self.assertEqual(lookup.record_existing_child("c1", {"name": "Zed Quill", "dob": DOB}, "HDCW", "1"),
