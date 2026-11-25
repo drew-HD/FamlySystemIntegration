@@ -128,8 +128,10 @@ class WebhookCannotReopen(ReopenCase):
         for path in Path("actions").rglob("*.py"):
             if "reopen=" in path.read_text(encoding="utf-8"):
                 callers.append(path.as_posix())
-        self.assertEqual(sorted(callers), ["actions/onboard/batch.py", "actions/onboard/cli_enqueue.py",
-                                           "actions/onboard/store.py"])
+        # The ad hoc pipeline has its own reopen (adhoc-enqueue --reopen-done; its store refuses it from the webhook).
+        self.assertEqual(sorted(callers), ["actions/adhoc/cli_enqueue.py", "actions/adhoc/store.py",
+                                           "actions/adhoc/worker.py", "actions/onboard/batch.py",
+                                           "actions/onboard/cli_enqueue.py", "actions/onboard/store.py"])
 
 
 class JobTests(ReopenCase):

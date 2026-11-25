@@ -19,6 +19,9 @@ def add_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--stage", action="append", metavar="NAME", help="--future: only these stage labels")
     parser.add_argument("--limit", type=int, metavar="N", help="--future: queue at most N deals")
     parser.add_argument("--list-only", action="store_true", help="--future: print the deals, queue nothing")
+    parser.add_argument("--reopen-done", action="store_true",
+                        help="With --deal-id: queue the deal again although its sessions were already pushed to "
+                             "Famly (a done job). The approval message warns; check Famly before approving")
 
 
 def future_deals(hubspot, today=None, stage_names=None) -> list[tuple[str, str]]:
@@ -73,6 +76,10 @@ def handle(args: argparse.Namespace):
         return backfill(onboard_audit.ReadOnlyHubSpot(), run_mode, stage_names=args.stage, limit=args.limit,
                         list_only=args.list_only)
     ids = list(args.deal_id or [])
+    reopen = getattr(args, "reopen_done", False)
+    if reopen and (args.file or not ids):
+        print("--reopen-done only works with --deal-id", file=sys.stderr)
+        raise SystemExit(3)
     if args.file:
         from actions.onboard import batch
         ids += batch.read_file(args.file)[0]
@@ -80,5 +87,6 @@ def handle(args: argparse.Namespace):
         print("give --deal-id or --file (digits only)", file=sys.stderr)
         raise SystemExit(3)
     return {"mode": run_mode, "jobs": [
-        {"dealId": i, "outcome": (r := store.enqueue(i, run_mode, "cli")).outcome, "jobId": r.job.id}
+        {"dealId": i, "outcome": (r := store.enqueue(i, run_mode, "cli", reopen=reopen)).outcome, "jobId": r.job.id,
+         "reopened": r.job.reopen}
         for i in ids]}

@@ -147,3 +147,5 @@ A new ad hoc child is created with its URN only (`externalId` + URN reference); 
 - Registry seam: another branch is building a children registry (name, DOB, URN, child id, operations and ad hoc deal ids). Nothing here depends on it; when it lands, record the same facts (child id, URN, deal id) at the two points where the deal is written.
 
 HubSpot status (2026-11-25): after a booking attempt the worker sets `famly_plan_status` on the ad hoc deal: `plan_created` when booked cleanly, `needs_attention` (with `famly_plan_note` codes) when the booking was sent but needs a person. Nothing for holds or rejected bookings.
+
+Re-running a done deal (2026-11-25): the webhook never re-queues a done deal; it posts a Slack notice saying it was blocked, with the command to re-run it. A person may re-run it with `python main.py adhoc-enqueue --deal-id ID --reopen-done` (CLI only); the job is marked `reopen` and its approval warns "Manual re-run". Famly's conflict check still holds it if the sessions are already booked.

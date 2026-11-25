@@ -85,6 +85,7 @@ _ADDED_COLUMNS = (
     ("reask_count", "INTEGER NOT NULL DEFAULT 0"), ("question", "TEXT"), ("candidate_child_id", "TEXT"),
     ("match_decision", "TEXT"), ("write_sent", "INTEGER NOT NULL DEFAULT 0"), ("outcomes", "TEXT"),
     ("child_create_sent", "INTEGER NOT NULL DEFAULT 0"),
+    ("reopen", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 _UPDATABLE = {"mode", "plan_hash", "plan_json", "holds", "flags", "child_id", "last_error_code", "approval_nonce",
@@ -120,6 +121,7 @@ class Job:
     write_sent: bool = False               # 1 once the booking request has been SENT: a job never sends a second
     outcomes: list | None = None           # codes of what the write phase did (contact:<id>:<code>, billpayer:<code>, ...)
     child_create_sent: bool = False        # 1 once the NEW-child create request has been SENT: never sent twice
+    reopen: bool = False                   # queued by hand (`adhoc-enqueue --reopen-done`) although the deal was done
 
 
 def store_path() -> Path:
@@ -179,7 +181,7 @@ def _to_job(row: sqlite3.Row) -> Job:
         approval_ref=row["approval_ref"], reask_count=row["reask_count"], question=row["question"],
         candidate_child_id=row["candidate_child_id"], match_decision=row["match_decision"],
         write_sent=bool(row["write_sent"]), outcomes=_loads(row["outcomes"]),
-        child_create_sent=bool(row["child_create_sent"]))
+        child_create_sent=bool(row["child_create_sent"]), reopen=bool(row["reopen"]))
 
 
 # --------------------------------------------------------------------------- #
@@ -194,25 +196,29 @@ class Enqueued:
     job: Job
 
 
-def enqueue(deal_id: str, mode: str, source: str = "cli") -> Enqueued:
-    """Enqueue a job for `deal_id` with ONE atomic INSERT: a deal that is already `done` creates no job; a deal
-    with an active job returns it (the unique index decides, not a check made first)."""
+def enqueue(deal_id: str, mode: str, source: str = "cli", *, reopen: bool = False) -> Enqueued:
+    """Enqueue a job for `deal_id` with ONE atomic INSERT: a deal that is already `done` creates no job (unless
+    `reopen`, a person's `adhoc-enqueue --reopen-done`; the job is marked and its approval warns); a deal with an
+    active job returns it (the unique index decides, not a check made first)."""
     if source not in SOURCES:
         raise ValueError(f"unknown job source: {source!r}")
+    if reopen and source != "cli":
+        raise ValueError("only a person (the CLI) may reopen a done deal")
     deal_id = str(deal_id).strip()
     with _open() as connection:
         done = connection.execute(
             "SELECT * FROM adhoc_jobs WHERE deal_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
             (deal_id, DONE)).fetchone()
-        if done is not None:
+        if done is not None and not reopen:
             return Enqueued(ALREADY_DONE, _to_job(done))
+    reopen = reopen and done is not None
     job_id = str(uuid.uuid4())
     try:
         with _open() as connection:
             connection.execute(
-                "INSERT INTO adhoc_jobs (id, deal_id, status, mode, source, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?)",
-                (job_id, deal_id, QUEUED, mode, source, _now()))
+                "INSERT INTO adhoc_jobs (id, deal_id, status, mode, source, created_at, updated_at, reopen) "
+                "VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?)",
+                (job_id, deal_id, QUEUED, mode, source, _now(), 1 if reopen else 0))
     except sqlite3.IntegrityError:
         active = active_for_deal(deal_id)
         if active is not None:
