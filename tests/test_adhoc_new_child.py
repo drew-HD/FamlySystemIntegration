@@ -622,6 +622,13 @@ class DealWriterTests(unittest.TestCase):
             if not self.swallow:
                 self.props.update(properties)
 
+    def test_the_real_client_classes_are_checked_at_start_up(self):
+        from core.hubspot import HubSpotClient, HubSpotDealWriter
+        self.assertTrue(callable(getattr(HubSpotDealWriter, "write_deal_properties", None)))
+        self.assertTrue(callable(getattr(HubSpotDealWriter, "get_deal", None)))
+        with self.assertRaises(TypeError):                         # the plain read client cannot write: caught early
+            deal_writeback.DealWriter(object.__new__(HubSpotClient))
+
     def test_urn_is_written_when_empty_confirmed_and_left_alone_when_equal(self):
         c = self.Client()
         self.assertEqual(deal_writeback.DealWriter(c).ensure_urn("1", URN), "written")
