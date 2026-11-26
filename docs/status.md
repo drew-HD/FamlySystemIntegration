@@ -14,7 +14,7 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 
 - Ad hoc (on main unless noted): read-only `adhoc-audit`, `adhoc-dry-run`, `adhoc-probe-read`; test-children-only `create-test-children` / `adhoc-probe-write`; worker steps 1-2 (jobs table, dry mode, Slack gate; ADHOC_MODE default off, prod dry). Step 3a (live writes for an EXISTING child: book, tag, end date) on branch adhoc-writes, fakes only, NOT run live; new-child creation (3b) and the intake webhook are not built. Design: docs/adhoc_design.md.
 
-- Ad hoc worker service (branch adhoc-worker-service): `run_forever` is a robust loop (drain, idle sleep 10 s, errors by type, clean SIGTERM); template `deploy/famly-adhoc-worker.service.example`, NOT installed; restart the unit after editing `.env`.
+- Ad hoc worker service (`famly-adhoc-worker`, installed and active): `run_forever` is a robust loop (drain, idle sleep 10 s, errors by type, clean SIGTERM); template `deploy/famly-adhoc-worker.service.example`, NOT installed; restart the unit after editing `.env`.
 
 - Children registry (branch children-registry, stage 1): var/children_registry.sqlite3 (CHILDREN_REGISTRY_PATH), `registry-backfill` (read-only, dry run unless --confirm), `registry-lookup`, `registry-stats`. Fakes only, not run live. Design: docs/registry_design.md.
 
@@ -24,7 +24,7 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
 - QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_ALLOWED_INSTITUTIONS.
 - ONBOARD_MODE off | dry | live (default off; dev off), ONBOARD_ALLOWED_DEAL_IDS, ONBOARD_TEST_DEAL_IDS, ONBOARD_ENFORCE_ALLOWLIST (only `off` disables).
-- ONBOARD_BILL_PAYER on | off (default off), ONBOARD_BILL_PAYER_DETAIL_SELECTION, ONBOARD_URN_GENERATION on | off (default off; planned on at cutover 1 Dec 2026).
+- ONBOARD_BILL_PAYER on | off (default off), ONBOARD_BILL_PAYER_DETAIL_SELECTION, ONBOARD_URN_GENERATION on | off (default off; ON in prod and working, confirmed 2026-11-26).
 - PLAN_FLAG_LEGACY_WRITE (default on; `off` stops writing famly_plan_uploaded), ONBOARD_SCOPE_LEAVE_AFTER (default 2026-01-01).
 - REFERENCE_DIR (outside the repo, shared by web, workers and cron), PREVIEW_STORE_PATH, ONBOARD_STORE_PATH.
 - Secrets (never print): FAMLY_ACCESS_TOKEN, HUBSPOT_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, INTAKE_SHARED_SECRET.
@@ -48,7 +48,7 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 - `python main.py chain-status|chain-resume|chain-cancel|chain-sweep` manage create_timeline chains.
 
 ## To confirm
-- Prod ONBOARD_ENFORCE_ALLOWLIST (screenshot cut off at `of…`, likely off = allow-list not enforced) and ONBOARD_URN_GENERATION (not visible). 34 held jobs in var/onboard_jobs.sqlite3 (last 10 Nov).
+- Prod ONBOARD_ENFORCE_ALLOWLIST (screenshot cut off at `of…`, likely off = allow-list not enforced). 34 held jobs in var/onboard_jobs.sqlite3 (last 10 Nov).
 - Whether the 2026-10-28/29 work (plan status, rejection sub-codes, held-queue visibility, reference-refresh and its cron, pricing-input guards) has been deployed and exercised live; those entries say "fakes only, NOT run live".
 - Whether the quality-check cron runs at 07:30 London or UTC on the droplet (cron may ignore CRON_TZ; switch to 06:30 on 2027-03-28 if UTC).
 - Open in the archive: month-end group boundary rule, `var/urns_missing.txt`, sibling deals sharing one Bill Payer label.
