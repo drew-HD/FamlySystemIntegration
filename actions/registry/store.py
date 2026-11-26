@@ -275,6 +275,13 @@ def decisions_for_deal(deal_id: str) -> dict[str, str]:
             "SELECT famly_child_id, decision FROM same_child_decisions WHERE deal_id = ?", (str(deal_id).strip(),))}
 
 
+def child_ids_by_site() -> dict[str, str | None]:
+    """{Famly child id: site code} for every registry child (ids and codes only)."""
+    with _open() as connection:
+        return {r["famly_child_id"]: r["site_code"] for r in connection.execute(
+            "SELECT famly_child_id, site_code FROM children")}
+
+
 def stats() -> dict:
     """Counts only (no names)."""
     with _open() as connection:

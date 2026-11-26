@@ -22,6 +22,8 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 
 - Registry stage 4 (branch registry-stage4, fakes only, NOT run live): a nursery deal joins an ad hoc child (registry match before create, same-child Slack question, dates/tag join writes, registry rows). ONBOARD_JOIN default off; probe steps `join-dates` / `untag` first. See docs/registry_design.md.
 
+- Registry nightly refresh (branch registry-refresh, fakes only): `registry-refresh [--dry-run]`, cron 02:30 London (line in docs/registry_design.md); Slack only for new issues, ids only.
+
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
 - QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_ALLOWED_INSTITUTIONS.
