@@ -21,6 +21,7 @@ are new again next night. Slack and the CSV carry codes and ids only, never a na
 import csv
 import json
 import logging
+import sqlite3
 from datetime import date
 from pathlib import Path
 
@@ -119,10 +120,10 @@ def new_issues_text(new: set, open_count: int) -> str:
     return "\n".join(lines)
 
 
-def write_report(rows, reports_dir: Path, today: date) -> Path:
-    """reports/registry_refresh_YYYY-MM-DD.csv (codes and ids only), keeping the last KEEP_REPORTS."""
+def write_report(rows, reports_dir: Path, today: date, tag: str = "") -> Path:
+    """reports/registry_refresh[_dryrun]_YYYY-MM-DD.csv (codes and ids only), keeping the last KEEP_REPORTS."""
     reports_dir.mkdir(parents=True, exist_ok=True)
-    target = reports_dir / f"registry_refresh_{today.isoformat()}.csv"
+    target = reports_dir / f"registry_refresh{tag}_{today.isoformat()}.csv"
     with target.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["code", "famly_child_id", "deal_id"])
@@ -147,10 +148,12 @@ def run(hubspot, gql, *, dry_run: bool = False, post=None, today: date | None = 
     reports_dir = Path(reports_dir or REPORTS_DIR)
     site_codes = backfill._site_codes() if site_codes is None else site_codes
 
-    def fail(code: str):
+    def fail(code: str, partial: bool = False):
         if not dry_run:
-            _post(post, f"⚠️ Children registry refresh stopped ({code}). Nothing was written; it runs again "
-                        "tomorrow. Ask an admin if this repeats.")
+            what = ("Some registry rows may already have been added (adds only; nothing was changed or removed)"
+                    if partial else "Nothing was written")
+            _post(post, f"⚠️ Children registry refresh stopped ({code}). {what}; it runs again tomorrow. Ask an "
+                        "admin if this repeats.")
         logger.error("registry-refresh: stopped code=%s", code)
         return RefreshAborted(code)
 
@@ -169,6 +172,8 @@ def run(hubspot, gql, *, dry_run: bool = False, post=None, today: date | None = 
     try:
         summary, report = backfill.run(hubspot, gql, confirm=not dry_run, children=children, links=links,
                                        site_codes=site_codes)
+    except sqlite3.Error as exc:            # the registry write (every read comes before it)
+        raise fail(f"write_failed_{type(exc).__name__}", partial=True) from None
     except Exception as exc:  # noqa: BLE001
         raise fail(f"read_failed_{type(exc).__name__}") from None
     no_child = summary.pop("_no_child_deals")
@@ -176,8 +181,9 @@ def run(hubspot, gql, *, dry_run: bool = False, post=None, today: date | None = 
     for child_id in sorted(set(before) - set(children)):
         report.add(CHILD_GONE, child_id)
     issues = {(c, child, deal) for c, child, deal in report.rows if c in ALERT_CODES}
-    target = write_report(report.rows, reports_dir, today)
-    backfill.write_deal_list(str(reports_dir / "registry_deals_without_child.txt"), no_child)
+    tag = "_dryrun" if dry_run else ""          # a dry run never overwrites the nightly files
+    target = write_report(report.rows, reports_dir, today, tag)
+    backfill.write_deal_list(str(reports_dir / f"registry_deals_without_child{tag}.txt"), no_child)
 
     result = {"mode": "dry_run" if dry_run else "refresh", "famlyChildren": len(children),
               "registryBefore": len(before), "childrenGone": report.counts[CHILD_GONE],
@@ -189,7 +195,11 @@ def run(hubspot, gql, *, dry_run: bool = False, post=None, today: date | None = 
     previous = load_state(state_file)
     new = issues - (previous or set())
     posted, has_post = False, previous is None or bool(new)
-    if previous is None:
+    if previous is None and state_file.exists():
+        logger.warning("registry-refresh: state file unreadable; starting a new baseline")
+        posted = _post(post, f"Children registry refresh: the previous state could not be read, so this run is a "
+                             f"new baseline. {len(issues)} open issue(s), all listed in reports/ by id.")
+    elif previous is None:
         posted = _post(post, f"Children registry refresh: first run. {len(children)} Famly children, "
                              f"{len(issues)} open issue(s) recorded as the baseline (ids in reports/).")
     elif new:

@@ -107,3 +107,15 @@ class RefreshTests(Base):
         text = "\n".join(self.posts) + Path(result["report"]).read_text(encoding="utf-8")
         for word in TEST_NAME.split() + ["N0", "2024-01-02"]:
             self.assertNotIn(word, text)
+
+    def test_a_registry_write_failure_says_rows_may_be_added_and_dry_run_files_are_separate(self):
+        import sqlite3
+        from unittest import mock
+        with mock.patch.object(store, "add_deal", side_effect=sqlite3.OperationalError("locked")):
+            with self.assertRaises(refresh.RefreshAborted) as caught:
+                self.run_refresh([child("c1", refs=["101"])], [{"id": "101", "dealstage": "ops"}])
+        self.assertEqual(caught.exception.code, "write_failed_OperationalError")
+        self.assertIn("may already have been added", self.posts[-1])
+        result = self.run_refresh([child("c1")], dry_run=True)
+        self.assertIn("registry_refresh_dryrun_", result["report"])
+        self.assertTrue((self.dir / "reports" / "registry_deals_without_child_dryrun.txt").exists())

@@ -37,7 +37,7 @@ Store: var/children_registry.sqlite3 (gitignored), code in actions/registry/. Ro
 - Stops before writing (one Slack line, exit 1) if a read fails or Famly's roster looks partial: under 90% of the registry's children, or a site with 10+ registry children under 50%.
 - Flags `registry_child_gone` (a registry child Famly no longer has); the row is kept.
 - Slack like onboard-quality-check: first run a baseline line; then only NEW issues (deal several children, URN several children, conflict, missing child, child gone), ids only; quiet nights post nothing; a failed post keeps the state (registry_refresh_state.json beside the registry).
-- reports/registry_refresh_YYYY-MM-DD.csv (codes and ids, last 14 kept) and reports/registry_deals_without_child.txt.
+- reports/registry_refresh_YYYY-MM-DD.csv (codes and ids, last 14 kept) and reports/registry_deals_without_child.txt (a dry run writes `_dryrun` copies). A registry write failure says some rows may already be added (adds only).
 - Cron (02:30 London, before reference-refresh): `30 2 * * * cd /home/drew/famly && flock -n /tmp/registry_refresh.lock /home/drew/famly/venv/bin/python main.py registry-refresh >> logs/registry_refresh.log 2>&1` under `CRON_TZ=Europe/London`.
 
 ## Drew's decisions (2026-11-25)
