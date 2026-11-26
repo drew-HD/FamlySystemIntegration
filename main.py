@@ -58,6 +58,7 @@ from actions.pull_sessions import cli as pull_sessions
 from actions.reference_refresh import cli as reference_refresh
 from actions.registry import cli_backfill as registry_backfill
 from actions.registry import cli_lookup as registry_lookup
+from actions.registry import cli_refresh as registry_refresh
 from actions.registry import cli_stats as registry_stats
 from actions.read_child_plans import cli as read_child_plans
 from actions.staff_credentials import cli as staff_credentials
@@ -98,6 +99,7 @@ ACTIONS = [
     adhoc_probe_write,
     registry_backfill,
     registry_lookup,
+    registry_refresh,
     registry_stats,
     testchild_seed,
     plan_check,

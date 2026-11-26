@@ -2,6 +2,7 @@
 
 | Task | Branch | Status |
 |---|---|---|
+| Registry nightly refresh (cron; guards against a partial roster; children gone from Famly flagged; Slack only for new issues) | registry-refresh | Built, fakes only. Next: Drew reviews and merges, runs `registry-refresh --dry-run` from prod, then one real run (baseline post), then installs the cron line. |
 | Ad hoc: no HubSpot notes on deals (status, plan note, famly_followup and Slack only) | adhoc-no-notes | Merged and deployed (main 57a4d3a). |
 | Ad hoc: `--reopen-done` and a Slack notice when a done deal is blocked | adhoc-reopen | Merged and deployed (5f080f2). |
 | Ad hoc: famly_plan_status on the ad hoc deal after a booking (plan_created / needs_attention) | adhoc-plan-status | Merged and deployed (224b639); live test on deal 68715656456 pending. |

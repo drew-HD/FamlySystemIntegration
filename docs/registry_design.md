@@ -32,6 +32,14 @@ Store: var/children_registry.sqlite3 (gitignored), code in actions/registry/. Ro
 - Probe (to run live before ONBOARD_JOIN=on): `adhoc-probe-write --confirm --step join-dates --step untag [--booking-site HDCW] [--reason-id ID]` on a test child; both steps restore the child afterwards.
 - The web process needs CHILDREN_REGISTRY_PATH too (the question's answer is saved from the Slack click).
 
+## Nightly refresh (built 2026-11-26, branch registry-refresh, fakes only, NOT run live)
+- `registry-refresh [--dry-run]` (actions/registry/refresh.py): reruns the backfill with --confirm (adds links, refreshes names, DOB and sites; never overwrites a link or deletes). READ-ONLY on Famly and HubSpot.
+- Stops before writing (one Slack line, exit 1) if a read fails or Famly's roster looks partial: under 90% of the registry's children, or a site with 10+ registry children under 50%.
+- Flags `registry_child_gone` (a registry child Famly no longer has); the row is kept.
+- Slack like onboard-quality-check: first run a baseline line; then only NEW issues (deal several children, URN several children, conflict, missing child, child gone), ids only; quiet nights post nothing; a failed post keeps the state (registry_refresh_state.json beside the registry).
+- reports/registry_refresh_YYYY-MM-DD.csv (codes and ids, last 14 kept) and reports/registry_deals_without_child.txt.
+- Cron (02:30 London, before reference-refresh): `30 2 * * * cd /home/drew/famly && flock -n /tmp/registry_refresh.lock /home/drew/famly/venv/bin/python main.py registry-refresh >> logs/registry_refresh.log 2>&1` under `CRON_TZ=Europe/London`.
+
 ## Drew's decisions (2026-11-25)
 - Exact name (same words any order, or the Famly name wholly inside the HubSpot name, e.g. a middle name) + same DOB: join automatically, no question.
 - Similar name (2+ words match, or same surname: twins) + same DOB: Slack question. One shared first name alone is not similar.
