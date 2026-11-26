@@ -1,5 +1,5 @@
 # THE JOIN DATES WRITE (INTERNAL API) of the onboarding worker (registry stage 4, actions/onboard/join_writes.py):
-# childActiveDates carries startDate AND endInfo {endDate[, reasonForLeavingId]}. Sending endInfo is proven only by
+# childActiveDates carries startDate AND endInfo {endDate, reasonForLeavingId ("Other"), additionalInfo: ""}. Sending endInfo is proven only by
 # the adhoc-probe-write `join-dates` step (to run live on a test child before the first real join).
 mutation EditChildActiveDates($childId: ChildId!, $childActiveDates: ChildActiveDatesInput!, $isParent: Boolean!) {
   attendance {

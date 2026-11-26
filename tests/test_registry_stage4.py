@@ -165,7 +165,9 @@ class JoinWriterTests(unittest.TestCase):
         codes = self.writer(child).dates("c1", date(2026, 1, 15), date(2028, 8, 31))
         self.assertEqual(codes, ["join_start_moved", "join_end_set"])
         self.assertEqual(child.sent, [{"childId": "c1", "isParent": False, "childActiveDates": {
-            "startDate": "2026-01-15", "endInfo": {"endDate": "2028-08-31"}}}])
+            "startDate": "2026-01-15", "endInfo": {"endDate": "2028-08-31", "reasonForLeavingId": join_writes.REASON_OTHER_ID,
+                          "additionalInfo": ""}}}])
+        self.assertEqual(join_writes.REASON_OTHER_ID, "01JNZQVJHK2F5X7S1174MZNQHT")      # Famly's "Other"
 
     def test_a_nursery_start_later_never_moves_the_start_later(self):
         child = FakeChild(start="2025-10-01")
@@ -182,11 +184,11 @@ class JoinWriterTests(unittest.TestCase):
                          ["join_start_kept", "join_end_kept"])
         self.assertEqual(child.sent, [])
 
-    def test_a_reason_for_leaving_is_sent_only_when_configured(self):
+    def test_an_override_reason_for_leaving_replaces_other(self):
         child = FakeChild()
         self.writer(child, "reason-1").dates("c1", date(2026, 1, 15), date(2028, 8, 31))
         self.assertEqual(child.sent[0]["childActiveDates"]["endInfo"],
-                         {"endDate": "2028-08-31", "reasonForLeavingId": "reason-1"})
+                         {"endDate": "2028-08-31", "reasonForLeavingId": "reason-1", "additionalInfo": ""})
 
     def test_an_unclear_send_is_settled_by_the_read_and_never_resent(self):
         child = FakeChild(start="2026-02-01")
