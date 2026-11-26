@@ -24,8 +24,8 @@
                               Gate A. Off: such a deal is HELD (`registry_join_off`), never created twice.
                               Turn on only after the adhoc-probe-write join steps passed live.
     ONBOARD_JOIN_LEAVING_REASON_ID
-                              optional Famly reason-for-leaving id sent with the nursery end date of a join,
-                              if the probe shows Famly needs one. Never guessed.
+                              optional override of the reason-for-leaving id sent with a join's nursery end
+                              date (Famly requires one). Default: "Other" (join_writes.REASON_OTHER_ID).
     HUBSPOT_PORTAL_ID         optional; used only to build the deal link in Slack.
     ONBOARD_STORE_PATH        optional path to the jobs SQLite file (default
                               var/onboard_jobs.sqlite3, gitignored).

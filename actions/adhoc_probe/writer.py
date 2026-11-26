@@ -13,7 +13,7 @@ it only ever touches the three AATest children from create-test-children. Steps 
 
   join-dates  (registry stage 4) on the --booking-site test child: the onboarding JOIN dates write exactly as the
             worker sends it (actions/onboard/join_writes.py: start moved 7 days EARLIER, an explicit end date via
-            endInfo, optional --reason-id), read back, then the original dates are restored.
+            endInfo with reason "Other" unless --reason-id), read back, then the original dates are restored.
   untag     (registry stage 4) on the --booking-site test child: make sure the Ad Hoc Only tag is on, remove it with
             the worker's JoinWriter.untag (POST /v2/tags/<id>/unassign), read back, then assign it again.
 
@@ -332,7 +332,8 @@ def step_join_dates(w: "Writer", site: str, child_id: str, out, reason_id: str |
     out(f"  {site}: join codes={codes}; summary now start={after[0]!r} end={after[1]!r}")
     restore = {"startDate": start0}
     if end0:
-        restore["endInfo"] = {"endDate": end0, **({"reasonForLeavingId": reason_id} if reason_id else {})}
+        restore["endInfo"] = {"endDate": end0, "reasonForLeavingId": reason_id or joiner.leaving_reason_id,
+                              "additionalInfo": ""}
     _GuardedGql(w).execute(query_path=END_DATE_QUERY, operation_name=END_DATE_OP,
                            variables={"childId": child_id, "childActiveDates": restore, "isParent": False})
     back = _dates_of(w, child_id)

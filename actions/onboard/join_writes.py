@@ -11,12 +11,12 @@
 Two writes, each sent ONCE and SETTLED BY A READ of the child's summary (never re-sent), like the ad hoc
 worker's administrative writes (actions/adhoc/writes.py):
 
-  dates  EditChildActiveDates(childId, {startDate, endInfo: {endDate[, reasonForLeavingId]}}) (internal GraphQL).
+  dates  EditChildActiveDates(childId, {startDate, endInfo: {endDate, reasonForLeavingId, additionalInfo: ""}}).
          Skipped when the summary already shows both dates.
   tag    POST /v2/tags/<tagId>/unassign {"childId"} (REST). Skipped when the child does not carry the tag.
 
-UNPROVEN LIVE (2026-11-26): the endInfo form of the dates write and the tag unassign path. The adhoc-probe-write steps
-`join-dates` and `untag` prove them on a test child first; until then the worker's join must not run live.
+LIVE PROBE (2026-11-26): the tag unassign path is proven. The dates write was rejected without a reason for leaving;
+it now always sends reason "Other" and additionalInfo "", as Famly's web app does (re-run `join-dates` to prove it).
 Returns short codes only; no error text, no names.
 """
 
@@ -28,7 +28,10 @@ HERE = Path(__file__).parent
 DATES_QUERY = HERE / "edit_active_dates.graphql"
 DATES_OP = "EditChildActiveDates"
 TAG_TITLE = "Ad Hoc Only"
-TAG_UNASSIGN_PATH = "/v2/tags/{tag_id}/unassign"          # to confirm with adhoc-probe-write --step untag
+TAG_UNASSIGN_PATH = "/v2/tags/{tag_id}/unassign"          # proven live 2026-11-26 (adhoc-probe-write --step untag)
+# Famly REJECTS an end date without a reason for leaving (probe 2026-11-26). Drew: a join always sends "Other"
+# (id from FetchReasonsForLeaving for the HDCW site set, 2026-11-26), with additionalInfo "" as the web app does.
+REASON_OTHER_ID = "01JNZQVJHK2F5X7S1174MZNQHT"
 
 START_MOVED, START_KEPT = "join_start_moved", "join_start_kept"
 END_SET, END_KEPT = "join_end_set", "join_end_kept"
@@ -66,7 +69,7 @@ class JoinWriter:
 
     def __init__(self, gql, rest, leaving_reason_id: str | None = None):
         self.gql, self.rest = gql, rest
-        self.leaving_reason_id = leaving_reason_id or None
+        self.leaving_reason_id = leaving_reason_id or REASON_OTHER_ID
         assert_document()
 
     def _child(self, child_id: str) -> dict:
@@ -91,9 +94,7 @@ class JoinWriter:
             return [DATES_FAILED]                                    # never sent: the planner holds for this
         if start == current_start and end == current_end:
             return [START_KEPT, END_KEPT]
-        end_info = {"endDate": end}
-        if self.leaving_reason_id:
-            end_info["reasonForLeavingId"] = self.leaving_reason_id
+        end_info = {"endDate": end, "reasonForLeavingId": self.leaving_reason_id, "additionalInfo": ""}
         try:
             self.gql.execute(query_path=DATES_QUERY, operation_name=DATES_OP,
                              variables={"childId": child_id, "isParent": False,

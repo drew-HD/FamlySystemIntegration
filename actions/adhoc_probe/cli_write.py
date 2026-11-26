@@ -25,7 +25,7 @@ def add_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--booking-site", default="HDCW",
                         help="Which test child the booking, discount, join-dates and untag steps use")
     parser.add_argument("--reason-id", default=None,
-                        help="`join-dates` step: a Famly reason-for-leaving id to send with the end date (optional)")
+                        help="`join-dates` step: a reason-for-leaving id instead of the default \"Other\"")
 
 
 def handle(args: argparse.Namespace):
