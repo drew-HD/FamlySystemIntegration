@@ -356,6 +356,24 @@ class WorkerJoinTests(Phase2Case):
         self.assertNotEqual(new_child.famly_child_id, ADHOC_CHILD)       # the new child's own registry row
         self.assertIn((DEAL, "operations"), new_child.deals)
 
+    def test_the_ad_hoc_child_gone_after_approval_stops_and_creates_nothing(self):
+        self.run_to_approval()
+        self.approve()
+        del self.famly.children[ADHOC_CHILD]
+        result = self.run_worker()
+        self.assertEqual((result["status"], result["code"]), (store.HELD, "registry_child_not_in_famly"))   # the re-plan holds first
+        self.assertEqual((self.famly.child_creates, self.joiner.calls), ([], []))
+
+    def test_a_different_child_on_the_deal_after_approval_stops_the_join(self):
+        self.run_to_approval()
+        self.approve()
+        self.hub.deals[DEAL]["famly_childid"] = "someone-else"
+        self.famly.children["someone-else"] = dict(self.famly.children[ADHOC_CHILD])
+        result = self.run_worker()
+        self.assertEqual(self.famly.child_creates, [])
+        self.assertEqual(self.joiner.calls, [])
+        self.assertNotEqual(result["status"], store.DONE)
+
     def test_join_switched_off_holds_and_sends_nothing(self):
         os.environ["ONBOARD_JOIN"] = "off"
         self.enqueue()

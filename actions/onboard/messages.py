@@ -51,6 +51,8 @@ _STATIC: dict[str, tuple[str, str]] = {
     "registry_same_child_question": (NOT_DONE, "A child in Famly has the same date of birth and a similar name. Answer the question in Slack (same child or a different child); the job then runs again."),
     "registry_child_needs_check": (NOT_DONE, "This deal matches a child already in Famly who is not an ad hoc only child (or matches more than one child), so nothing was created or joined. Check Famly and the children registry."),
     "registry_child_not_in_famly": (NOT_DONE, "The children registry points to a Famly child that no longer exists, so nothing was created or joined. Ask an admin to check the registry."),
+    "registry_same_child_later": (NOT_DONE, "A child in Famly has the same date of birth and a similar name. Once the other problems are fixed, press Retry and a question will ask whether it is the same child."),
+    "join_child_changed": (NOT_DONE, "The approved plan was to join the ad hoc child, but Famly or the deal now points to a different child, so nothing was changed. Check the deal and Famly, then run it again."),
     "registry_join_off": (NOT_DONE, "This child is already in Famly as an ad hoc child, and joining a nursery deal to an ad hoc child is switched off, so nothing was created. Join them by hand in Famly (dates, remove the Ad Hoc Only tag) and save the Famly child ID on the deal."),
     "join_start_moved": (INFO, ""),
     "join_start_kept": (INFO, ""),

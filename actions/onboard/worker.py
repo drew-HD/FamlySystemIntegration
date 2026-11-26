@@ -248,7 +248,9 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> dict:
         if reasons == [SAME_CHILD_QUESTION] and question and hasattr(deps.notifier, "same_child"):
             _ask_same_child(job, deps, question["childId"], run_mode)
         else:
-            _held(job, deps, reasons, write_back=run_mode == config.MODE_LIVE)
+            # The question is asked only once nothing else holds the deal: fix the rest first, then Retry.
+            shown = [r if r != SAME_CHILD_QUESTION else "registry_same_child_later" for r in reasons]
+            _held(job, deps, shown, write_back=run_mode == config.MODE_LIVE)
         return {}
 
     if run_mode == config.MODE_DRY:
@@ -848,23 +850,29 @@ def _ensure_child(job, deps, plan, deal) -> ChildResult:
     deal_id = job.deal_id
 
     # The live lookup immediately before the write. A child that now exists wins.
+    planned = plan.get("child") or {}
+    joining = planned.get("via") == VIA_REGISTRY
     ids, via = _lookup_child(deps, deal, deal_id, urn_fallback=True)
     if len(ids) > 1:
         raise StopJob(store.NEEDS_REVIEW, "child_ambiguous")
     if ids:
-        return ChildResult(ids[0], created=False, clean_create=False, via=via)
+        if joining and ids[0] != planned.get("famlyChildId"):
+            raise StopJob(store.NEEDS_REVIEW, "join_child_changed")      # an approved join never goes elsewhere
+        return ChildResult(ids[0], created=False, clean_create=False,
+                           via=VIA_REGISTRY if joining else via)
 
     # The plan also treats the deal's own recorded `famly_childid` as the child when no reference
     # or URN finds one (an existing child by that route). Without this the worker would go on to
     # CREATE it, and fail on a missing name that only a create needs.
     recorded = _clean(deal.get("famly_childid"))
-    if recorded and deps.famly().child_exists(recorded):
+    if recorded and joining and recorded != planned.get("famlyChildId"):
+        raise StopJob(store.NEEDS_REVIEW, "join_child_changed")
+    if recorded and not joining and deps.famly().child_exists(recorded):
         return ChildResult(recorded, created=False, clean_create=False, via=VIA_RECORDED)
 
     # REGISTRY STAGE 4: the approved plan JOINS a child ad hoc already created. Never a create: the child must
     # still exist, otherwise a person looks (nothing is created in its place).
-    planned = plan.get("child") or {}
-    if planned.get("via") == VIA_REGISTRY:
+    if joining:
         joined = _clean(planned.get("famlyChildId"))
         if not joined or not deps.famly().child_exists(joined):
             raise StopJob(store.NEEDS_REVIEW, "registry_child_not_in_famly")
