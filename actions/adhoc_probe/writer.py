@@ -11,6 +11,12 @@ it only ever touches the three AATest children from create-test-children. Steps 
             child's pricing group (under 3 / over 3 by age), preview conflicts, UpsertPurchase one Monday,
             then DeletePurchase exactly the purchase this run created.
 
+  join-dates  (registry stage 4) on the --booking-site test child: the onboarding JOIN dates write exactly as the
+            worker sends it (actions/onboard/join_writes.py: start moved 7 days EARLIER, an explicit end date via
+            endInfo, optional --reason-id), read back, then the original dates are restored.
+  untag     (registry stage 4) on the --booking-site test child: make sure the Ad Hoc Only tag is on, remove it with
+            the worker's JoinWriter.untag (POST /v2/tags/<id>/unassign), read back, then assign it again.
+
 Guards: `--confirm`; at least one --step; every child id must be a verified test child (isTestChild true in
 its summary, re-read right before each write); at most MAX_WRITES writes; a delete only of purchase ids
 created in this run; a missing or unmapped pricing group, a missing or non-positive price, or any conflict
@@ -37,7 +43,7 @@ END_DATE_OP, UPSERT_OP, DELETE_OP = "EditChildActiveDates", "UpsertPurchase", "D
 
 MAX_WRITES = 12
 TAG_TITLE = "Ad Hoc Only"
-STEPS = ("end-date", "tag", "booking", "create-variants", "left-booking", "discount")
+STEPS = ("end-date", "tag", "booking", "create-variants", "left-booking", "discount", "join-dates", "untag")
 VARIANTS = {"HDCW_NOEND": "no end date at all", "HDCW_LEFT": "enrolment already ended (2026-06-30)"}
 LEFT_END = "2026-06-30"
 SESSION_TITLE = "Morning"            # the plain ad hoc session; the "(F) ..." variants carry no ad hoc price
@@ -272,6 +278,89 @@ def step_booking(w: Writer, site: str, child_id: str, out, today: date, discount
         raise
 
 
+class _GuardedGql:
+    """The internal GraphQL client for the join steps: every execute is a write, so the test-child guard and the
+    write cap apply to it."""
+
+    def __init__(self, w: "Writer"):
+        self.w = w
+
+    def execute(self, **kwargs):
+        self.w._guard(str((kwargs.get("variables") or {}).get("childId") or ""))
+        self.w._spend()
+        return self.w.gql.execute(**kwargs)
+
+
+class _GuardedRest:
+    """The REST client for the join steps: reads pass through; a POST must name a verified test child."""
+
+    def __init__(self, w: "Writer"):
+        self.w = w
+
+    def get(self, *args, **kwargs):
+        return self.w.rest.get(*args, **kwargs)
+
+    def post(self, path, json_body=None, **kwargs):
+        self.w._guard(str((json_body or {}).get("childId") or ""))
+        self.w._spend()
+        return self.w.rest.post(path, json_body=json_body, **kwargs)
+
+
+def _dates_of(w: "Writer", child_id: str) -> tuple[str | None, str | None]:
+    child = w.summary(child_id)["child"]
+    start = str(child.get("localStartDate") or "")[:10] or None
+    end = str(child.get("localEndDate") or child.get("endDate") or "")[:10] or None
+    return start, end
+
+
+def step_join_dates(w: "Writer", site: str, child_id: str, out, reason_id: str | None = None) -> None:
+    from actions.onboard.join_writes import JoinWriter
+
+    w._guard(child_id)
+    start0, end0 = _dates_of(w, child_id)
+    if not start0:
+        raise WriteRefused("no start date to restore")
+    s0 = date.fromisoformat(start0)
+    earlier = s0 - timedelta(days=7)
+    end = date(s0.year + 1, 8, 31)
+    if end0 == end.isoformat():
+        end += timedelta(days=1)
+    out(f"  {site}: before start={start0!r} end={end0!r}; joining with start {earlier} (earlier), end {end}")
+    joiner = JoinWriter(_GuardedGql(w), _GuardedRest(w), reason_id)
+    codes = joiner.dates(child_id, earlier, end)
+    after = _dates_of(w, child_id)
+    out(f"  {site}: join codes={codes}; summary now start={after[0]!r} end={after[1]!r}")
+    restore = {"startDate": start0}
+    if end0:
+        restore["endInfo"] = {"endDate": end0, **({"reasonForLeavingId": reason_id} if reason_id else {})}
+    _GuardedGql(w).execute(query_path=END_DATE_QUERY, operation_name=END_DATE_OP,
+                           variables={"childId": child_id, "childActiveDates": restore, "isParent": False})
+    back = _dates_of(w, child_id)
+    out(f"  {site}: restored; summary now start={back[0]!r} end={back[1]!r} "
+        f"({'MATCHES' if back == (start0, end0) else 'DIFFERS FROM'} the original)")
+
+
+def step_untag(w: "Writer", site: str, child_id: str, out) -> None:
+    from actions.onboard.join_writes import JoinWriter
+
+    entry = catalogue.load_sites().get(site)
+    institution_id = entry.get("institutionId") if isinstance(entry, dict) else None
+    if not institution_id:
+        raise WriteRefused("site_id_missing")
+    tag_id = find_tag(w.rest, institution_id)
+    have = {t.get("tagId") for t in w.summary(child_id).get("tags") or [] if isinstance(t, dict)}
+    if tag_id not in have:
+        w.assign_tag(child_id, tag_id)
+        out(f"  {site}: tag {tag_id} assigned first, so there is one to remove")
+    code = JoinWriter(_GuardedGql(w), _GuardedRest(w)).untag(child_id, [institution_id])
+    now = {t.get("tagId") for t in w.summary(child_id).get("tags") or [] if isinstance(t, dict)}
+    out(f"  {site}: untag code={code}; tag present on summary = {tag_id in now}")
+    if tag_id not in now:
+        w.assign_tag(child_id, tag_id)
+        again = {t.get("tagId") for t in w.summary(child_id).get("tags") or [] if isinstance(t, dict)}
+        out(f"  {site}: tag assigned again (restored); present = {tag_id in again}")
+
+
 def variant_payload(label: str, site_id: str, group_id: str) -> dict:
     """A test child like create-test-children makes, but HDCW_NOEND has NO lastDay and HDCW_LEFT has a past one."""
     payload = seed.make_child_input(label.replace("_", "-"), site_id, group_id)
@@ -332,7 +421,7 @@ def load_variants(rest, store: Path) -> dict[str, str]:
 
 def run(confirm: bool, steps: list[str], booking_site: str, rest, gql, out: Callable[[str], None] = print,
         today: date | None = None, store_path: Path | None = None, public=None,
-        discount: str = "10") -> dict:
+        discount: str = "10", reason_id: str | None = None) -> dict:
     if not confirm:
         raise WriteRefused("refusing without --confirm; nothing was written")
     if not steps or any(s not in STEPS for s in steps):
@@ -360,7 +449,8 @@ def run(confirm: bool, steps: list[str], booking_site: str, rest, gql, out: Call
         if step == "left-booking":
             targets = {"HDCW_LEFT": w.children.get("HDCW_LEFT")}
         else:
-            targets = {booking_site: children.get(booking_site)} if step in ("booking", "discount") else children
+            one_child = ("booking", "discount", "join-dates", "untag")
+            targets = {booking_site: children.get(booking_site)} if step in one_child else children
         for site, child_id in targets.items():
             if not child_id:
                 outcome.setdefault(step, {})[site] = "no_verified_test_child"
@@ -373,6 +463,10 @@ def run(confirm: bool, steps: list[str], booking_site: str, rest, gql, out: Call
                     step_tag(w, site, child_id, out)
                 elif step == "left-booking":
                     step_booking(w, site, child_id, out, today or date.today(), pricing_site="HDCW")
+                elif step == "join-dates":
+                    step_join_dates(w, site, child_id, out, reason_id)
+                elif step == "untag":
+                    step_untag(w, site, child_id, out)
                 elif step == "discount":
                     step_booking(w, site, child_id, out, today or date.today(), discount=discount)
                 else:

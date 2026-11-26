@@ -64,7 +64,11 @@ ACTION_ADJUST = "plan_adjust"
 ACTION_ONBOARD_APPROVE = "onboard_approve"
 ACTION_ONBOARD_REJECT = "onboard_reject"
 ACTION_ONBOARD_RETRY = "onboard_retry"
-ONBOARD_ACTIONS = (ACTION_ONBOARD_APPROVE, ACTION_ONBOARD_REJECT, ACTION_ONBOARD_RETRY)
+# Registry stage 4: the same-child question for a nursery deal (value `<job_id>:<famly child id>:<nonce>`).
+ACTION_ONBOARD_SAME_CHILD = "onboard_same_child"
+ACTION_ONBOARD_NEW_CHILD = "onboard_new_child"
+ONBOARD_ACTIONS = (ACTION_ONBOARD_APPROVE, ACTION_ONBOARD_REJECT, ACTION_ONBOARD_RETRY, ACTION_ONBOARD_SAME_CHILD,
+                   ACTION_ONBOARD_NEW_CHILD)
 
 # The ad hoc pipeline's own buttons (actions/adhoc/approval.py). Same channel, same signing, same value format.
 ACTION_ADHOC_APPROVE = "adhoc_approve"
@@ -921,6 +925,15 @@ def post_onboard_gate(text: str, value: str) -> str | None:
     """Post the onboarding approval request. Returns a message ref
     (`<channel>:<ts>`) when Slack accepted it, else None. Never raises."""
     return _post_onboard_blocks(text, _onboard_blocks(text, value), "onboarding approval request")
+
+
+def post_onboard_same_child(text: str, value: str) -> str | None:
+    """The onboarding same-child question (registry stage 4): That's the child / Different child.
+    Returns a message ref or None. Never raises."""
+    return _post_onboard_blocks(text, _adhoc_blocks(text, [
+        _button("That's the child", ACTION_ONBOARD_SAME_CHILD, value, "primary"),
+        _button("Different child: create a new one", ACTION_ONBOARD_NEW_CHILD, value)]),
+        "onboarding same-child question")
 
 
 def post_onboard_hold(text: str, value: str) -> str | None:

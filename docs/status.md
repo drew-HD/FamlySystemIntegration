@@ -20,11 +20,14 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 
 - Ad hoc + registry (branch adhoc-registry, stages 2-3): registry match before create, operations child booked without tag, registry rows, Slack and HubSpot note/`famly_followup` reports. Fakes only. Needs the HubSpot property `famly_followup` (dropdown) before live.
 
+- Registry stage 4 (branch registry-stage4, fakes only, NOT run live): a nursery deal joins an ad hoc child (registry match before create, same-child Slack question, dates/tag join writes, registry rows). ONBOARD_JOIN default off; probe steps `join-dates` / `untag` first. See docs/registry_design.md.
+
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
 - QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_ALLOWED_INSTITUTIONS.
 - ONBOARD_MODE off | dry | live (default off; dev off), ONBOARD_ALLOWED_DEAL_IDS, ONBOARD_TEST_DEAL_IDS, ONBOARD_ENFORCE_ALLOWLIST (only `off` disables).
 - ONBOARD_BILL_PAYER on | off (default off), ONBOARD_BILL_PAYER_DETAIL_SELECTION, ONBOARD_URN_GENERATION on | off (default off; ON in prod and working, confirmed 2026-11-26).
+- ONBOARD_JOIN on | off (default off; registry stage 4), ONBOARD_JOIN_LEAVING_REASON_ID (optional, only if the probe shows Famly needs one). CHILDREN_REGISTRY_PATH must reach the web process and the onboard worker.
 - PLAN_FLAG_LEGACY_WRITE (default on; `off` stops writing famly_plan_uploaded), ONBOARD_SCOPE_LEAVE_AFTER (default 2026-01-01).
 - REFERENCE_DIR (outside the repo, shared by web, workers and cron), PREVIEW_STORE_PATH, ONBOARD_STORE_PATH.
 - Secrets (never print): FAMLY_ACCESS_TOKEN, HUBSPOT_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, INTAKE_SHARED_SECRET.

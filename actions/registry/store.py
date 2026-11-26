@@ -58,7 +58,17 @@ CREATE TABLE IF NOT EXISTS child_emails (
     created_at     TEXT NOT NULL,
     UNIQUE (email, famly_child_id)
 );
+-- A person's answer to the same-child question for an operations deal (stage 4): same | different.
+CREATE TABLE IF NOT EXISTS same_child_decisions (
+    deal_id        TEXT NOT NULL,
+    famly_child_id TEXT NOT NULL,
+    decision       TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    PRIMARY KEY (deal_id, famly_child_id)
+);
 """
+
+SAME, DIFFERENT = "same", "different"
 
 
 @dataclass
@@ -194,6 +204,20 @@ def add_email(famly_child_id: str, email: str) -> str:
         return ADDED if cursor.rowcount else ALREADY
 
 
+def set_decision(deal_id: str, famly_child_id: str, decision: str) -> None:
+    """Record a person's answer to the same-child question. A later answer replaces an earlier one."""
+    if decision not in (SAME, DIFFERENT):
+        raise ValueError("decision must be same or different")
+    deal, child = str(deal_id or "").strip(), str(famly_child_id or "").strip()
+    if not deal or not child:
+        raise ValueError("deal_id and famly_child_id are required")
+    with _open() as connection:
+        connection.execute(
+            "INSERT INTO same_child_decisions (deal_id, famly_child_id, decision, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (deal_id, famly_child_id) DO UPDATE SET decision = excluded.decision, "
+            "created_at = excluded.created_at", (deal, child, decision, _now()))
+
+
 # --------------------------------------------------------------------------- #
 # Reads
 # --------------------------------------------------------------------------- #
@@ -244,6 +268,13 @@ def by_dob(dob: str) -> list[Child]:
         return [c for c in (_child(connection, i) for i in ids) if c]
 
 
+def decisions_for_deal(deal_id: str) -> dict[str, str]:
+    """{Famly child id: same | different} for the deal's answered same-child questions."""
+    with _open() as connection:
+        return {r["famly_child_id"]: r["decision"] for r in connection.execute(
+            "SELECT famly_child_id, decision FROM same_child_decisions WHERE deal_id = ?", (str(deal_id).strip(),))}
+
+
 def stats() -> dict:
     """Counts only (no names)."""
     with _open() as connection:
@@ -266,5 +297,5 @@ def stats() -> dict:
 
 def _reset_for_tests() -> None:
     with _open() as connection:
-        for table in ("children", "child_urns", "child_deals", "child_emails"):
+        for table in ("children", "child_urns", "child_deals", "child_emails", "same_child_decisions"):
             connection.execute(f"DELETE FROM {table}")

@@ -130,6 +130,10 @@ class Deps:
     notifier: Any                # .gate(text, job_id, plan_hash, nonce) -> ref | None; .notice(text)
     famly_factory: Callable[[], FamlyReads] | None = None
     sleep: Callable[[float], None] = time.sleep       # the bill payer stage's 10 s settle wait
+    # Registry stage 4: actions.registry.lookup (or a fake) and the join writer (join_writes.JoinWriter).
+    # None: no registry check and no join (the plan and the job are exactly as before).
+    registry: Any = None
+    join_writer: Any = None
 
     def famly(self) -> FamlyReads:
         """A FRESH set of live reads. Never reuse one across the plan and a
@@ -139,14 +143,20 @@ class Deps:
 
 def default_deps() -> Deps:
     from actions.pull_roster.runner import _public_client
+    from actions.onboard.join_writes import JoinWriter
+    from actions.registry import lookup as registry_lookup
+    from core.client import GraphQLClient
     from core.hubspot import HubSpotDealWriter
     from core.rest_client import RestClient
 
+    rest = RestClient()
     return Deps(
         hubspot=HubSpotDealWriter(),
         public=_public_client(),
-        rest=RestClient(),
+        rest=rest,
         notifier=notifier_mod.SlackNotifier(),
+        registry=registry_lookup,
+        join_writer=JoinWriter(GraphQLClient(), rest, config.join_leaving_reason_id()),
     )
 
 
@@ -221,7 +231,7 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> dict:
     # The job HISTORY for the deal (this job and earlier ones): which children a
     # create this pipeline sent produced. A child found by lookup that is not one
     # of them already existed, and is handled more strictly.
-    plan = DryRun(deps.hubspot, deps.famly()).plan_deal(
+    plan = DryRun(deps.hubspot, deps.famly(), registry=deps.registry).plan_deal(
         deal_id, context, created_child_ids=store.created_child_ids_for_deal(deal_id),
         # A live job RESERVES the deal's URN here (plan time), so the number approved in
         # Slack is the number written; a dry job only shows the next number, reserving nothing.
@@ -234,7 +244,11 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> dict:
     reasons = sorted({h["reason"] for h in plan["holds"]})
     if reasons:
         store.update(job.id, plan_hash=digest)
-        _held(job, deps, reasons, write_back=run_mode == config.MODE_LIVE)
+        question = next((h for h in plan["holds"] if h["reason"] == SAME_CHILD_QUESTION), None)
+        if reasons == [SAME_CHILD_QUESTION] and question and hasattr(deps.notifier, "same_child"):
+            _ask_same_child(job, deps, question["childId"], run_mode)
+        else:
+            _held(job, deps, reasons, write_back=run_mode == config.MODE_LIVE)
         return {}
 
     if run_mode == config.MODE_DRY:
@@ -385,10 +399,19 @@ def _write_phase(job, deps, plan, context, digest) -> dict:
         if urn_written:
             flags += _urn_readback_flags(deps, urn_written, child.child_id)
 
-    _write_child_back(deps, syncer, deal, deal_id, child)
+    # REGISTRY STAGE 4: the join writes (dates, tag), the ad hoc child's URN on the deal, and the registry row.
+    join = _join_stage(job, deps, plan, deal, child) if child.via == VIA_REGISTRY else None
+    if join is not None:
+        flags += join.flags
+    _record_registry(job, deps, plan, deal, child, flags)
+
+    _write_child_back(deps, syncer, deal, deal_id, child, end_date_set=bool(join and join.end_set))
 
     if plan.get("scope") == derive.SCOPE_CHILD_ONLY:
-        return _finish_child_only(job, deps, plan, syncer, child, flags, info, urn_written)
+        info = _finish_child_only(job, deps, plan, syncer, child, flags, info, urn_written,
+                                  join_failed=bool(join and join.failed))
+        _join_summary(deps, job, child, join)
+        return info
 
     store.set_status(job.id, store.CREATING_CONTACTS)
     outcomes, contact_warnings, all_ok = _create_contacts(job, deps, plan, context, child, own_child)
@@ -437,6 +460,8 @@ def _write_phase(job, deps, plan, context, digest) -> dict:
     # defaulted end date could not be written to the deal. The Famly work is done
     # either way and nothing is retried.
     failures = []
+    if join is not None and join.failed:
+        failures.append("join_writes")
     if not all_ok:
         failures.append("contact_outcomes")
     if bill_payer_failed:
@@ -449,7 +474,9 @@ def _write_phase(job, deps, plan, context, digest) -> dict:
              + (["urn_allocated"] if urn_written else [])
              # Informational footer code: a parent was added to a child that already existed.
              + (["contact_unmatched_on_existing_child"] if not own_child and CREATED in contact_codes else [])
-             + ["created" if child.created else "child_existed"])
+             + ["created" if child.created else "child_existed"]
+             + (["joined_adhoc_child"] if join is not None else []))
+    codes = list(dict.fromkeys(codes))
     if failures:
         store.set_status(job.id, store.NEEDS_REVIEW, last_error_code=",".join(failures))
         deps.notifier.notice(notifier_mod.notice_text(
@@ -458,6 +485,7 @@ def _write_phase(job, deps, plan, context, digest) -> dict:
         store.set_status(job.id, store.DONE, last_error_code=None)
         deps.notifier.notice(notifier_mod.notice_text(deal_id, f"✅ {summary}", codes, bill_payer_footer))
     _admin_notice(deps, deal_id, codes)
+    _join_summary(deps, job, child, join)
     return info
 
 
@@ -498,8 +526,132 @@ def _urn_readback_flags(deps, urn: str, child_id: str) -> list[str]:
     return ["urn_readback_mismatch"]
 
 
+@dataclass
+class JoinResult:
+    codes: list            # every join code (join_writes codes, then the URN code)
+    flags: list            # the codes a person should see (not the OK ones)
+    failed: bool           # a NOT_DONE join code: the job ends needs_review
+    end_set: bool          # the nursery end date is on the child (set now or already)
+
+
+JOIN_FAILURE_CODES = ("join_dates_failed", "join_end_date_failed", "join_summary_unreadable", "join_tag_failed")
+
+
+def _join_stage(job, deps, plan, deal, child: "ChildResult") -> JoinResult:
+    """REGISTRY STAGE 4, after Gate A: join the nursery deal to the ad hoc child (join_writes.py: the start date
+    moved only EARLIER, the nursery end date set, the Ad Hoc Only tag removed; never the room or the sessions),
+    then put the ad hoc child's URN on the deal when it has none. Never raises; nothing is re-sent."""
+    from actions.onboard import join_writes
+    from integrations import catalogue
+
+    if deps.join_writer is None:
+        raise StopJob(store.NEEDS_REVIEW, "join_writer_missing")
+    section = (plan.get("child") or {}).get("join") or {}
+    try:
+        start = derive.parse_hubspot_date(deal.get("actual_start_date_1"))
+        end, _defaulted = derive.resolve_end_date(deal)
+    except ValueError:
+        start, end = None, None
+    sites = catalogue.load_sites()
+    site = sites.get(str(section.get("siteCode") or "").upper())
+    if isinstance(site, dict) and site.get("institutionId"):
+        institutions = [site["institutionId"]]
+    else:                         # the child's site is not known: look for the tag at every site
+        institutions = [v["institutionId"] for v in sites.values() if isinstance(v, dict) and v.get("institutionId")]
+    try:
+        if start is None or end is None:
+            codes = [join_writes.DATES_FAILED]          # never sent without both dates
+        else:
+            codes = deps.join_writer.dates(child.child_id, start, end)
+        codes.append(deps.join_writer.untag(child.child_id, institutions))
+    except Exception as exc:  # noqa: BLE001 - one stage must never stop the job's end
+        logger.error("onboard: join stage hit %s", type(exc).__name__)
+        codes = [join_writes.DATES_FAILED, join_writes.TAG_FAILED]
+    codes.append(_join_urn(job, deps, deal, section.get("urn")))
+    codes = [c for c in codes if c]
+    logger.info("onboard: join job=%s deal=%s child=%s codes=%s", job.id, job.deal_id, child.child_id,
+                ",".join(codes))
+    store.update(job.id, outcomes=[f"join:{c}" for c in codes])
+    flags = [c for c in codes if c not in join_writes.OK_CODES and c != "join_urn_written"]
+    return JoinResult(codes, flags, any(c in JOIN_FAILURE_CODES for c in codes),
+                      join_writes.END_SET in codes or join_writes.END_KEPT in codes)
+
+
+def _join_urn(job, deps, deal: dict, urn: str | None) -> str | None:
+    """The ad hoc child's URN onto the deal's child_urn, only when the deal has none; confirmed by a re-read.
+    A flag code on any problem: HubSpot never blocks Famly."""
+    if not urn:
+        return None
+    try:
+        current = str(deps.hubspot.get_deal(job.deal_id).get("child_urn") or "").strip()
+        if current:
+            return None if current.upper() == urn.upper() else "join_urn_differs"
+        deps.hubspot.write_deal_properties(job.deal_id, {hubspot.CHILD_URN_PROPERTY: urn})
+        confirmed = str(deps.hubspot.get_deal(job.deal_id).get("child_urn") or "").strip()
+    except (HubSpotError, ValueError) as exc:
+        logger.error("onboard: join urn write failed job=%s (%s)", job.id, type(exc).__name__)
+        return "join_urn_write_failed"
+    if confirmed.upper() != urn.upper():
+        return "join_urn_write_failed"
+    deal["child_urn"] = urn
+    return "join_urn_written"
+
+
+def _record_registry(job, deps, plan, deal, child: "ChildResult", flags: list) -> None:
+    """The registry row after the child is confirmed: a NEW child with its operations deal, or the operations deal
+    on a child found or joined. A flag, never a stop. Names pass through memory only (the registry exception)."""
+    if deps.registry is None:
+        return
+    try:
+        if child.created:
+            from actions.registry import match as registry_match
+            try:
+                dob = derive.parse_hubspot_date(deal.get("child_date_of_birth"))
+            except ValueError:
+                dob = None
+            code = deps.registry.record_new_child(
+                child.child_id, registry_match.deal_child_name(deal), dob.isoformat() if dob else "",
+                plan.get("siteCode"), _clean(deal.get("child_urn")) or None, job.deal_id, kind="operations")
+        else:
+            code = deps.registry.record_operations_deal(child.child_id, job.deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("onboard: registry write hit %s", type(exc).__name__)
+        code = None
+    logger.info("onboard: registry job=%s deal=%s child=%s code=%s", job.id, job.deal_id, child.child_id, code)
+    from actions.registry import lookup as registry_codes
+    if code == registry_codes.store.CONFLICT:
+        flags.append("registry_conflict")
+    elif code in (None, registry_codes.FAILED) or (code == registry_codes.MISSING and child.via == VIA_REGISTRY):
+        flags.append("registry_failed")
+
+
+def _join_summary(deps, job, child: "ChildResult", join: JoinResult | None) -> None:
+    """The join summary in Slack: the child's NAME, Famly id and deal id (the Slack exception for joins). Never
+    raises."""
+    if join is None:
+        return
+    try:
+        name = deps.registry.child_name(child.child_id) if deps.registry is not None else None
+        deps.notifier.notice(notifier_mod.join_summary_text(job.deal_id, child.child_id, name, join.codes))
+    except Exception:  # noqa: BLE001 - a notice must never mask the outcome
+        logger.warning("onboard: join summary failed for job %s", job.id)
+
+
+def _ask_same_child(job, deps, child_id: str, run_mode: str) -> None:
+    """The registry same-child question (a hold): the registry child's NAME, Famly id and deal id, with
+    "That's the child" / "Different child" buttons (approval.py). The answer is saved in the registry and the deal
+    runs again as a fresh job."""
+    nonce = secrets.token_hex(8)
+    store.set_status(job.id, store.HELD, last_error_code=SAME_CHILD_QUESTION, outcomes=[SAME_CHILD_QUESTION],
+                     approval_nonce=nonce)
+    name = deps.registry.child_name(child_id) if deps.registry is not None else None
+    text = notifier_mod.same_child_text(job.deal_id, child_id, name, run_mode)
+    if not deps.notifier.same_child(text, job.id, child_id, nonce):
+        store.update(job.id, approval_nonce=None, last_error_code="approval_request_not_posted")
+
+
 def _finish_child_only(job, deps, plan, syncer, child: "ChildResult", flags, info,
-                       urn_written: str | None = None) -> dict:
+                       urn_written: str | None = None, join_failed: bool = False) -> dict:
     """A deal in a child-only stage ends here: the child is in Famly, and no contact is
     read or created and no bill payer is scanned or written. The status is `child_linked`
     (never contacts_linked / bill_payer_linked)."""
@@ -510,9 +662,12 @@ def _finish_child_only(job, deps, plan, syncer, child: "ChildResult", flags, inf
     codes = (flags + syncer.reports + list(plan["warnings"])
              + (["hubspot_writeback_failed"] if syncer.critical_failed else [])
              + (["urn_allocated"] if urn_written else [])
-             + ["child_only_stage", "created" if child.created else "child_existed"])
-    if syncer.critical_failed:
-        store.set_status(job.id, store.NEEDS_REVIEW, last_error_code="hubspot_writeback_failed")
+             + ["child_only_stage", "created" if child.created else "child_existed"]
+             + (["joined_adhoc_child"] if child.via == VIA_REGISTRY else []))
+    codes = list(dict.fromkeys(codes))
+    if syncer.critical_failed or join_failed:
+        store.set_status(job.id, store.NEEDS_REVIEW, last_error_code=",".join(
+            (["join_writes"] if join_failed else []) + (["hubspot_writeback_failed"] if syncer.critical_failed else [])))
         deps.notifier.notice(notifier_mod.notice_text(
             job.deal_id, f"⚠️ {summary} The job needs a person.", codes))
     else:
@@ -628,6 +783,8 @@ def _clean(value) -> str:
 VIA_DEAL = "external_system_reference"
 VIA_URN = "urn"
 VIA_RECORDED = "famly_childid"
+VIA_REGISTRY = "registry"
+SAME_CHILD_QUESTION = "registry_same_child_question"
 
 
 @dataclass
@@ -704,6 +861,15 @@ def _ensure_child(job, deps, plan, deal) -> ChildResult:
     if recorded and deps.famly().child_exists(recorded):
         return ChildResult(recorded, created=False, clean_create=False, via=VIA_RECORDED)
 
+    # REGISTRY STAGE 4: the approved plan JOINS a child ad hoc already created. Never a create: the child must
+    # still exist, otherwise a person looks (nothing is created in its place).
+    planned = plan.get("child") or {}
+    if planned.get("via") == VIA_REGISTRY:
+        joined = _clean(planned.get("famlyChildId"))
+        if not joined or not deps.famly().child_exists(joined):
+            raise StopJob(store.NEEDS_REVIEW, "registry_child_not_in_famly")
+        return ChildResult(joined, created=False, clean_create=False, via=VIA_REGISTRY)
+
     is_test = config.is_test_deal(deal_id)
     try:
         payload = inputs.build_child_input(deal, deal_id, plan, is_test)
@@ -773,12 +939,13 @@ def _summary_flags(deps, deal, plan, child_id, is_test) -> list[str]:
         return [summary_check.UNRECOGNISED]
 
 
-def _write_child_back(deps, syncer, deal, deal_id, child: ChildResult) -> None:
+def _write_child_back(deps, syncer, deal, deal_id, child: ChildResult, end_date_set: bool = False) -> None:
     """After the Famly child write: the child id, and a DEFAULTED end date.
 
     Both are CRITICAL (the Syncer records a failure to write either). The end date
-    is written only if this job created the child with a defaulted lastDay AND the
-    deal's `end_date` is STILL empty when checked now: it is never overwritten.
+    is written only if this job created the child with a defaulted lastDay (or a JOIN set the
+    defaulted end date on an ad hoc child: `end_date_set`) AND the deal's `end_date` is STILL empty
+    when checked now: it is never overwritten.
     """
     syncer.write(hubspot.FAMLY_CHILDID_PROPERTY, child.child_id)
 
@@ -786,7 +953,7 @@ def _write_child_back(deps, syncer, deal, deal_id, child: ChildResult) -> None:
         end, defaulted = derive.resolve_end_date(deal)
     except ValueError:
         end, defaulted = None, False
-    if child.created and defaulted and end is not None:
+    if (child.created or end_date_set) and defaulted and end is not None:
         try:
             live = deps.hubspot.get_deal(deal_id)
         except HubSpotError:

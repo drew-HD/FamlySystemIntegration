@@ -19,6 +19,13 @@
     ONBOARD_BILL_PAYER_DETAIL_SELECTION
                               optional GraphQL selection for the name and phone fields of a
                               BillPayer (enables the `bill_payer_differs` comparison).
+    ONBOARD_JOIN              off | on   (default off). Registry stage 4: on, a nursery deal whose child is
+                              already in Famly as an ad hoc child JOINS it (dates, Ad Hoc Only tag) after
+                              Gate A. Off: such a deal is HELD (`registry_join_off`), never created twice.
+                              Turn on only after the adhoc-probe-write join steps passed live.
+    ONBOARD_JOIN_LEAVING_REASON_ID
+                              optional Famly reason-for-leaving id sent with the nursery end date of a join,
+                              if the probe shows Famly needs one. Never guessed.
     HUBSPOT_PORTAL_ID         optional; used only to build the deal link in Slack.
     ONBOARD_STORE_PATH        optional path to the jobs SQLite file (default
                               var/onboard_jobs.sqlite3, gitignored).
@@ -30,6 +37,15 @@ import os
 logger = logging.getLogger(__name__)
 
 MODE_OFF, MODE_DRY, MODE_LIVE = "off", "dry", "live"
+
+
+def join_enabled() -> bool:
+    """ONBOARD_JOIN=on (default off): a nursery deal may join a child ad hoc already created."""
+    return os.environ.get("ONBOARD_JOIN", "").strip().lower() == "on"
+
+
+def join_leaving_reason_id() -> str | None:
+    return os.environ.get("ONBOARD_JOIN_LEAVING_REASON_ID", "").strip() or None
 
 
 def mode() -> str:

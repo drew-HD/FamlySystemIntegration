@@ -25,6 +25,8 @@ def planned_writes(plan: dict) -> dict:
         and bill_payer.get("status") in ("would_create", "would_attach") else 0,
         # The bill payer's contact as an invoice recipient: one write, whatever the payer decision.
         "recipient": 1 if isinstance(bill_payer, dict) and bill_payer.get("recipient") == "will_add" else 0,
+        # Registry stage 4: joining an ad hoc child (its dates and the Ad Hoc Only tag), counted as one.
+        "join": 1 if (plan.get("child") or {}).get("join") else 0,
     }
 
 
@@ -37,6 +39,10 @@ def _child_line(plan: dict, this_job_child_id: str | None) -> str:
         return messages.state("child_ambiguous")
     if status == "child_unresolved":
         return messages.state("child_unresolved")
+    if child.get("join"):
+        by_person = child["join"].get("decidedBy") == "person"
+        return messages.state("child_join_adhoc_person" if by_person else "child_join_adhoc_exact",
+                              id=child.get("famlyChildId"))
     if child.get("origin") == "created_by_pipeline":
         mine = this_job_child_id and child.get("famlyChildId") == this_job_child_id
         return messages.state("child_created_by_this_job" if mine else "child_created_earlier")

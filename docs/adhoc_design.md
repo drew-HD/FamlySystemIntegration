@@ -129,7 +129,7 @@ A hold now says WHICH dates it is about: past, weekend and duplicate dates, and 
 - Step 3b (built, fakes only, NOT run live): a NEW child is created in live mode after the Slack approval (child with no end date, contacts bill payer first, bill payer stage, recipient link, URN from the onboarding allocator), then booked and tagged; `new_child_not_built` is gone. Design and decisions: docs/adhoc_3b_design.md.
 - No HubSpot write-back yet (no famly_childid / status property is written to the deal).
 
-## FUTURE WORK (flagged, not built): nursery onboarding must JOIN a child that ad hoc already created
+## Nursery onboarding JOINS a child that ad hoc already created (built 2026-11-26 as registry stage 4: see docs/registry_design.md; the notes below are the original flag)
 Why: an ad hoc child is created by the ad hoc worker with the ad hoc deal's HUBSPOT reference, its own URN, no end date and the Ad Hoc Only tag. When that family later signs up for nursery, the onboarding worker (`actions/onboard/worker.py` `_ensure_child`) looks for a child by the NURSERY deal's reference, then by the deal's URN, and otherwise CREATES one. If it does not find the ad hoc child, Famly gets a duplicate child.
 What to build later (onboarding branch, a separate task, not part of ad hoc):
 1. Before onboarding creates a child, look for a child that was created for ad hoc: by the deal's URN, by parent email, by name + date of birth, or by the ad hoc deal's allocated URN (the onboard store records it per deal). Found exactly once -> JOIN it instead of creating; more than one or unsure -> a Slack question (like the ad hoc child-match question), never a guess.
