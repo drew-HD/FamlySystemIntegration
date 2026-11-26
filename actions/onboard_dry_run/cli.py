@@ -37,9 +37,9 @@ def handle(args: argparse.Namespace):
 
         batch.require_scope(args.limit, args.all)
         ids, _file_hash = batch.read_file(args.file)
-        return runner.run(ids if args.all else ids[: args.limit])
+        return runner.run(ids if args.all else ids[: args.limit], registry=_registry())
     if args.deal_id:
-        result = runner.run([args.deal_id])
+        result = runner.run([args.deal_id], registry=_registry())
         # One deal: the plan itself, without the batch wrapper.
         return {
             "mode": result["mode"],
@@ -53,4 +53,10 @@ def handle(args: argparse.Namespace):
     ids = [part for part in args.deal_ids.split(",") if part.strip()]
     if not ids:
         raise SystemExit("--deal-ids needs at least one id")
-    return runner.run(ids)
+    return runner.run(ids, registry=_registry())
+
+
+def _registry():
+    """The children registry lookup (read-only here): the dry run shows a registry join or question."""
+    from actions.registry import lookup
+    return lookup

@@ -24,11 +24,19 @@ Store: var/children_registry.sqlite3 (gitignored), code in actions/registry/. Ro
 
 - `famly_plan_status` on the AD HOC deal (branch adhoc-plan-status): after a booking attempt only. Booked cleanly = `plan_created` (note cleared); booking sent but needs a person = `needs_attention` (note = codes). Holds, rejected bookings and dry mode write nothing; a failed write is a Slack line.
 
+## Stage 4 (built 2026-11-26, branch registry-stage4, fakes only, NOT run live)
+- Planner (`actions/onboard_dry_run/runner.py` `_registry_join`): only when no child is found by deal reference, URN or famly_childid. One EXACT match that is ad hoc only (an ad hoc deal, no operations deal) joins; any other undecided match holds `registry_same_child_question` (Slack question with the registry name, Famly id and deal link; buttons "That's the child" / "Different child"); the answer is stored in the registry (`same_child_decisions`) and a fresh job plans again. "same" for a child that is not ad hoc only, or two "same": `registry_child_needs_check`. Registry unreadable: `registry_unreadable`. Children answered "different" are also skipped by the possible-duplicate check.
+- Switch `ONBOARD_JOIN` (default off): off holds `registry_join_off` instead of joining. Turn on only after the probe passes.
+- Worker (`actions/onboard/worker.py` `_join_stage`, `actions/onboard/join_writes.py`): after Gate A, never a create; dates sent once and settled by a read (start moved only EARLIER; nursery end date via `endInfo`, optional `ONBOARD_JOIN_LEAVING_REASON_ID`); Ad Hoc Only tag removed (`POST /v2/tags/<id>/unassign`); the ad hoc child's URN written to the deal only when empty; famly_childid and a defaulted end date written back as usual (end date only if it landed on the child); registry row (operations deal; a created child gets its own row); join summary in Slack with the child's name. A failed join write ends the job needs_review (`join_writes`); contacts and bill payer run as for any existing child.
+- Probe (to run live before ONBOARD_JOIN=on): `adhoc-probe-write --confirm --step join-dates --step untag [--booking-site HDCW] [--reason-id ID]` on a test child; both steps restore the child afterwards.
+- The web process needs CHILDREN_REGISTRY_PATH too (the question's answer is saved from the Slack click).
+
 ## Drew's decisions (2026-11-25)
 - Exact name (same words any order, or the Famly name wholly inside the HubSpot name, e.g. a middle name) + same DOB: join automatically, no question.
 - Similar name (2+ words match, or same surname: twins) + same DOB: Slack question. One shared first name alone is not similar.
 - Parent email: a backup signal only (contacts can have several emails, and the primary email can change). It can raise the question; it never joins on its own.
 - Join by operations: move the start date to the deal's start; do NOT change the group; remove the Ad Hoc Only tag; do not change any ad hoc sessions already booked.
+- 2026-11-26: move the start only when the nursery start is EARLIER (never later, so booked ad hoc sessions stay inside the active dates); set the nursery end date (deal end date or the 4th-birthday default), as onboarding always does.
 - Backfill: one run from prod is fine if it catches everyone; nightly refresh later.
 - No HUBSPOT reference is added to an existing child (no children.update). The registry holds the Famly id, URNs and deal ids; onboarding writes famly_childid on the operations deal. The server finds children through the registry.
 

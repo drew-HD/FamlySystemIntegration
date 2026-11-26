@@ -35,7 +35,7 @@ from actions.onboard_dry_run.famly_reads import (
     normalise_email,
 )
 from core.client import GraphQLError, GraphQLHTTPError
-from actions.onboard.config import allowlist_enforced, is_test_deal
+from actions.onboard.config import allowlist_enforced, is_test_deal, join_enabled
 from core import hubspot as hubspot_config
 from core.hubspot import HubSpotClient, HubSpotError
 
@@ -76,15 +76,25 @@ FAMLY_CHILDID_NOT_FOUND = "famly_childid_not_found"
 CHILD_POSSIBLE_DUPLICATE = "child_possible_duplicate"
 CHILD_NAME_INCOMPLETE = "child_name_incomplete"
 
+# Registry stage 4 (docs/registry_design.md): a nursery deal JOINS a child that ad hoc already created.
+VIA_REGISTRY = "registry"
+REGISTRY_UNREADABLE = "registry_unreadable"
+REGISTRY_SAME_CHILD_QUESTION = "registry_same_child_question"
+REGISTRY_CHILD_NEEDS_CHECK = "registry_child_needs_check"
+REGISTRY_CHILD_NOT_IN_FAMLY = "registry_child_not_in_famly"
+REGISTRY_JOIN_OFF = "registry_join_off"
+
 
 class DryRun:
     """One invocation. Holds the per-run memoised reads (label map, stage names,
     live scans) so a batch of deals does each of them once."""
 
-    def __init__(self, hubspot: HubSpotClient, famly: FamlyReads, urn_service=None):
+    def __init__(self, hubspot: HubSpotClient, famly: FamlyReads, urn_service=None, registry=None):
         self._hubspot = hubspot
         self._famly = famly
         self._urn_service = urn_service
+        # actions.registry.lookup (or a fake). None: no registry check (the plan is exactly as before).
+        self._registry = registry
         self._labels: links.LabelMap | None = None
         self._stages: dict[str, tuple[str, str]] | None = None
 
@@ -153,6 +163,11 @@ class DryRun:
         self._derive_group(deal, site_code, left_nursery, plan)
         self._derive_dates(deal, left_nursery, plan)
         plan["child"] = self._child(deal, deal_id, plan)
+        different: set = set()
+        if plan["child"]["status"] == CHILD_WOULD_CREATE:
+            joined, different = self._registry_join(deal, deal_id, plan)
+            if joined is not None:
+                plan["child"] = joined
         if plan["child"]["status"] == CHILD_FOUND:
             # `created_by_pipeline` needs BOTH: found by the deal-id reference (a
             # pipeline-created child always carries it) and an id the job history
@@ -167,7 +182,7 @@ class DryRun:
             if is_test_deal(deal_id):
                 plan["child"]["testChild"] = True       # only ever on a would-create child
             self._check_creatable(deal, plan)
-            self._check_possible_duplicate(deal, plan)
+            self._check_possible_duplicate(deal, plan, skip_ids=different)
         if derive.is_child_only_stage(plan["stage"]["name"]):
             # A child-only stage: the child stage above ran as normal (all its holds and
             # warnings apply); no contact is read, matched or planned and the bill payer is
@@ -409,10 +424,70 @@ class DryRun:
         ):
             holds.append({"reason": derive.DOB_MISSING})
 
-    def _check_possible_duplicate(self, deal: dict, plan: dict) -> None:
+    def _registry_join(self, deal: dict, deal_id: str, plan: dict) -> tuple[dict | None, set]:
+        """REGISTRY STAGE 4, before a child would be created: is this child already in Famly as an AD HOC child?
+
+        Returns (the child section for a JOIN, or None; the child ids a person said are a DIFFERENT child).
+        Drew's rules (docs/registry_design.md): one EXACT match (name + date of birth) that is ad hoc only (an ad
+        hoc deal, no operations deal) joins automatically; a person's "same child" answer joins that child; any
+        other undecided match is the same-child QUESTION (a hold that posts it); a "same" answer for a child that
+        is not ad hoc only is a hold for a person (`registry_child_needs_check`). Children a person said are
+        different are ignored. Names and dates of birth stay in memory; the plan carries ids and codes only."""
+        if self._registry is None:
+            return None, set()
+        from actions.registry import match as registry_match
+
+        try:
+            dob = derive.parse_hubspot_date(deal.get("child_date_of_birth"))
+        except ValueError:
+            return None, set()                     # the date hold explains it
+        name = registry_match.deal_child_name(deal)
+        if dob is None or not name:
+            return None, set()                     # _check_creatable holds for it
+        try:
+            found = list(self._registry.operations_candidates(name, dob.isoformat(), deal_id))
+        except Exception as exc:  # noqa: BLE001 - never the message
+            logger.warning("dry-run: registry read failed deal=%s (%s)", deal_id, type(exc).__name__)
+            plan["holds"].append({"reason": REGISTRY_UNREADABLE})
+            return None, set()
+        different = {c["childId"] for c in found if c.get("decision") == "different"}
+        live = [c for c in found if c.get("decision") != "different"]
+        same = [c for c in live if c.get("decision") == "same"]
+        exact = [c for c in live if c.get("result") == "exact" and not c.get("decision")]
+        if len(same) > 1:
+            plan["holds"].append({"reason": REGISTRY_CHILD_NEEDS_CHECK, "childIds": sorted(c["childId"] for c in same)})
+            return None, different
+        if same:
+            target = same[0]
+        elif len(exact) == 1 and exact[0].get("adhocOnly"):
+            target = exact[0]
+        elif live:
+            ask = sorted(live, key=lambda c: (c.get("result") != "exact", c["childId"]))[0]
+            plan["holds"].append({"reason": REGISTRY_SAME_CHILD_QUESTION, "childId": ask["childId"],
+                                  "childIds": sorted(c["childId"] for c in live)})
+            return None, different
+        else:
+            return None, different
+        if not target.get("adhocOnly"):
+            plan["holds"].append({"reason": REGISTRY_CHILD_NEEDS_CHECK, "childIds": [target["childId"]]})
+            return None, different
+        if not self._famly.child_exists(target["childId"]):
+            plan["holds"].append({"reason": REGISTRY_CHILD_NOT_IN_FAMLY, "childIds": [target["childId"]]})
+            return None, different
+        if not join_enabled():
+            plan["holds"].append({"reason": REGISTRY_JOIN_OFF, "childIds": [target["childId"]]})
+            return None, different
+        urns = list(target.get("urns") or [])
+        return {"status": CHILD_FOUND, "famlyChildId": target["childId"], "via": VIA_REGISTRY,
+                "join": {"from": "adhoc", "decidedBy": "person" if same else "exact_match",
+                         "urn": urns[0].upper() if len(urns) == 1 else None,
+                         "siteCode": target.get("siteCode")}}, different
+
+    def _check_possible_duplicate(self, deal: dict, plan: dict, skip_ids=()) -> None:
         """Before a child would be created: any child at the same site with the
         same date of birth AND a matching name is a HOLD (ids only). Names and
-        dates are compared in memory and never output or logged."""
+        dates are compared in memory and never output or logged. `skip_ids`: children a
+        person already said are a DIFFERENT child (the registry same-child question)."""
         site_id = plan.get("siteId")
         try:
             dob = derive.parse_hubspot_date(deal.get("child_date_of_birth"))
@@ -432,6 +507,7 @@ class DryRun:
             matches = same_day
         else:
             matches = [c for c in same_day if _names_match(c.full_name, names, deal)]
+        matches = [c for c in matches if c.child_id not in set(skip_ids)]
         if matches:
             plan["holds"].append(
                 {"reason": CHILD_POSSIBLE_DUPLICATE, "childIds": [c.child_id for c in matches]}
@@ -648,10 +724,11 @@ def run(
     deal_ids: list[str],
     hubspot: HubSpotClient | None = None,
     famly: FamlyReads | None = None,
+    registry=None,
 ) -> dict:
     """Dry-run every deal id. Output: the association labels found, one plan per
-    deal and a counts-only summary."""
-    dry = DryRun(hubspot or HubSpotClient(), famly or FamlyReads())
+    deal and a counts-only summary. `registry`: the children registry lookup (the CLI passes it)."""
+    dry = DryRun(hubspot or HubSpotClient(), famly or FamlyReads(), registry=registry)
     unique = list(dict.fromkeys(str(i).strip() for i in deal_ids if str(i).strip()))
 
     try:

@@ -39,6 +39,15 @@ MSG_RETRY_BUSY = "A job for this deal is already queued or running. Nothing new 
 MSG_RETRY_DONE = "This deal has already been onboarded. Nothing was queued."
 MSG_RETRY_OFF = "Onboarding is switched off. Nothing was queued."
 MSG_RETRY_NOT_ALLOWED = "This deal is not allowed for live onboarding. Nothing was queued."
+MSG_SAME_YES = ("✅ Saved: same child. The deal runs again and will ask for the usual approval to join that "
+                "child.")
+MSG_SAME_NO = ("✅ Saved: a different child. The deal runs again and will ask for the usual approval to create "
+               "a new child.")
+MSG_SAME_HANDLED = "This question has already been answered. Nothing new was started."
+MSG_SAME_STALE = "⚠️ This question is out of date. Use the newer message."
+MSG_SAME_FAILED = "⚠️ The answer could not be saved (the children registry). Nothing was started; try again."
+
+SAME_CHILD_QUESTION = "registry_same_child_question"
 
 
 _RESULT_CODES = {}
@@ -46,6 +55,11 @@ _RESULT_CODES = {}
 
 def button_value(job_id: str, plan_hash: str, nonce: str | None) -> str:
     return f"{job_id}:{plan_hash[:HASH_PREFIX]}:{nonce or ''}"
+
+
+def same_child_value(job_id: str, child_id: str, nonce: str | None) -> str:
+    """The same-child question's button value: the Famly child id sits where the plan hash prefix usually is."""
+    return f"{job_id}:{child_id}:{nonce or ''}"
 
 
 def _parse(value: str | None) -> tuple[str | None, str | None, str | None]:
@@ -73,6 +87,9 @@ def _decide(action_id: str, value: str | None, user: str | None) -> str:
 
     if action_id == slack.ACTION_ONBOARD_RETRY:
         return _retry(job, nonce, user)
+
+    if action_id in (slack.ACTION_ONBOARD_SAME_CHILD, slack.ACTION_ONBOARD_NEW_CHILD):
+        return _same_child(job, prefix, nonce, user, same=action_id == slack.ACTION_ONBOARD_SAME_CHILD)
 
     if action_id == slack.ACTION_ONBOARD_REJECT:
         if (job.status == store.AWAITING_APPROVAL
@@ -129,7 +146,42 @@ def _retry(job, nonce, user) -> str:
             store.ALREADY_DONE: MSG_RETRY_DONE}[result.outcome]
 
 
+def _same_child(job, child_id, nonce, user, same: bool) -> str:
+    """The answer to the registry same-child question (a held job). The CURRENT question's nonce is spent
+    atomically (a second press does nothing), the answer is saved in the registry for this deal and child, and a
+    fresh job is queued: it plans again (a "same" answer plans a join, "different" plans a create) and asks for the
+    usual Gate A approval. Nothing is written to Famly here."""
+    if job.status != store.HELD or job.last_error_code != SAME_CHILD_QUESTION or not job.approval_nonce:
+        return MSG_SAME_HANDLED
+    if not child_id or nonce != job.approval_nonce:
+        return MSG_SAME_STALE
+    mode = config.mode()
+    if mode == config.MODE_OFF:
+        return MSG_RETRY_OFF
+    if mode == config.MODE_LIVE and not config.allowed_for_job(job, mode):
+        return MSG_RETRY_NOT_ALLOWED
+    if not store.consume_hold_nonce(job.id, nonce):
+        return MSG_SAME_HANDLED
+    try:
+        from actions.registry import lookup as registry
+        registry.record_decision(job.deal_id, child_id, same)
+    except Exception as exc:  # noqa: BLE001 - the question stays answerable
+        logger.error("ONBOARD SAME-CHILD job=%s save failed (%s)", job.id, type(exc).__name__)
+        store.update(job.id, approval_nonce=nonce)
+        return MSG_SAME_FAILED
+    result = store.enqueue(job.deal_id, mode, source=job.source, file_hash=job.file_hash)
+    logger.info("ONBOARD SAME-CHILD job=%s deal=%s child=%s decision=%s new_job=%s result=%s user=%s", job.id,
+                job.deal_id, child_id, "same" if same else "different", result.job.id, result.outcome, user)
+    if result.outcome == store.ALREADY_QUEUED:
+        return MSG_RETRY_BUSY
+    if result.outcome == store.ALREADY_DONE:
+        return MSG_RETRY_DONE
+    return MSG_SAME_YES if same else MSG_SAME_NO
+
+
 _RESULT_CODES.update({
+    MSG_SAME_YES: "same_child", MSG_SAME_NO: "different_child", MSG_SAME_HANDLED: "question_already_answered",
+    MSG_SAME_STALE: "question_stale", MSG_SAME_FAILED: "question_save_failed",
     MSG_RETRY_QUEUED: "retry_queued", MSG_RETRY_HANDLED: "retry_already_used", MSG_RETRY_STALE: "retry_stale",
     MSG_RETRY_BUSY: "retry_job_active", MSG_RETRY_DONE: "retry_already_done",
     MSG_RETRY_OFF: "retry_mode_off", MSG_RETRY_NOT_ALLOWED: "retry_not_allowlisted",

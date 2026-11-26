@@ -22,13 +22,16 @@ def add_args(parser: argparse.ArgumentParser) -> None:
                         help=f"One of {', '.join(writer.STEPS)} (repeatable; at least one)")
     parser.add_argument("--discount", default="10",
                         help="`discount` step: the discountAmount sent on the test booking (default 10)")
-    parser.add_argument("--booking-site", default="HDCW", help="Which test child the booking cycle uses")
+    parser.add_argument("--booking-site", default="HDCW",
+                        help="Which test child the booking, discount, join-dates and untag steps use")
+    parser.add_argument("--reason-id", default=None,
+                        help="`join-dates` step: a Famly reason-for-leaving id to send with the end date (optional)")
 
 
 def handle(args: argparse.Namespace):
     try:
         return writer.run(args.confirm, args.step or [], args.booking_site, RestClient(), GraphQLClient(),
-                          public=_public_client(), discount=args.discount)
+                          public=_public_client(), discount=args.discount, reason_id=args.reason_id)
     except writer.WriteRefused as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(3) from None
