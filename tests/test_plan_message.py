@@ -65,6 +65,14 @@ class LayoutTests(unittest.TestCase):
                       "   Monthly estimate: 650.00", text)
         self.assertTrue(text.endswith("*Warnings*\n• None."))
 
+    def test_a_rounding_of_only_the_later_period_is_never_shown_as_the_current_one(self):
+        rounding = [SimpleNamespace(from_="2027-03-01", estimate=650.0, target=649.0)]
+        text = slack.build_summary(plan(), [], rounding=rounding, facts={},
+                                   today=__import__("datetime").date(2026, 10, 1))
+        pricing = text.split("*Pricing*\n", 1)[1].split("\n\n", 1)[0]
+        self.assertNotIn("Rounded", pricing)
+        self.assertIn("Monthly estimate: 650.00 · Rounded: 649.00", text)
+
     def test_an_unfunded_full_year_plan_without_advance_fee(self):
         head = self.text(termTimeOnly=False, funding=None, advance=None, index=0, total=1).split("\n\n")[0]
         self.assertIn("plan 1 of 1 approval", head)

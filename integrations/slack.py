@@ -497,10 +497,14 @@ def build_summary(
     periods = list(rounding or [])
 
     def rounded_for(state) -> str | None:
+        """The rounded target for THIS period, matched by its start date. Rounding leaves out a period that
+        needed no adjustment, so a period without a match shows no rounded line (never another period's)."""
         start = str(getattr(state, "from_", None) or "")[:10]
-        match = [p for p in periods if str(p.from_ or "")[:10] == start] or (periods if len(periods) == 1
-                                                                            and state is current else [])
-        return f"{match[0].target:,.2f}" if match else None
+        if start:
+            match = [p for p in periods if str(p.from_ or "")[:10] == start]
+        else:   # a stand-in with no period dates: only an undated single rounding can be this one
+            match = [p for p in periods if not p.from_] if state is current else []
+        return f"{match[0].target:,.2f}" if len(match) == 1 else None
 
     lines.append("*Pricing*")
     lines.append(f"• Weekly total: {_money(weekly)}")

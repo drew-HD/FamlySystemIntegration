@@ -829,6 +829,19 @@ class AutoCommitSwitchTests(QueueTestCase):
             self.assertEqual(len(self.famly.commits), expected)            # one plan per Approve
         self.assertEqual(self.job(data).status, jobs.STATUS_DONE)
 
+    def test_a_waiting_job_is_not_a_problem_anywhere(self):
+        self.off()
+        data = self.queue()
+        self.run_all()
+        job = self.job(data)
+        self.assertEqual(jobs.held_codes(job), [jobs.AWAITING_APPROVAL_CODE])
+        self.assertEqual([r["reasonCode"] for r in worker.held_list()["held"]], [jobs.AWAITING_APPROVAL_CODE])
+        with mock.patch.object(queue_web.status_sync, "held_async") as flagged:
+            body = {}
+            queue_web._reflag_held(body, job, None)                         # the deal's webhook sent again
+        flagged.assert_not_called()                                         # no needs_attention, no Slack line
+        self.assertEqual(body["reason_code"], jobs.AWAITING_APPROVAL_CODE)
+
     def test_reject_cancels_and_commits_nothing(self):
         self.off()
         data = self.queue()

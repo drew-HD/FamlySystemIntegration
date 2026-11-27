@@ -122,6 +122,10 @@ def _reflag_held(data: dict, job: jobs.Job, deal) -> None:
     try:
         codes = jobs.held_codes(job)
         data["reason_code"] = ",".join(codes)
+        if jobs.is_awaiting_approval(job):
+            # Waiting for an Approve is the normal path, not a problem: no needs_attention, no Slack line.
+            logger.info("QUEUE_TIMELINE resend for job_id=%s awaiting approval", job.job_id)
+            return
         deal = deal or (job.payload or {}).get("dealId")
         status_sync.held_async(
             deal, job.job_id, status_codes.queue_job_held(codes), post_slack=jobs.held_notice_due(deal, job.job_id)

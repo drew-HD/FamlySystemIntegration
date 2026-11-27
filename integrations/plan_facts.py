@@ -49,8 +49,8 @@ def fee_label(value: Any) -> str | None:
 
 def fee_option(deal_id: Any, client: Any = None) -> str | None:
     """The deal's fee option as a plain label, or None (no deal id, empty, or HubSpot could not be read)."""
-    deal = "".join(ch for ch in str(deal_id or "") if ch.isdigit())
-    if not deal or (client is None and not LIVE_LOOKUPS):
+    deal = str(deal_id or "").strip()
+    if not deal.isdigit() or (client is None and not LIVE_LOOKUPS):        # never guess an id
         return None
     try:
         if client is None:

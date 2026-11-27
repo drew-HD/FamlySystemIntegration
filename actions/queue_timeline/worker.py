@@ -30,8 +30,9 @@ reasons. A human approving it returns the job to the queue (approval.py ->
 jobs.release_after_approval) and the worker carries on.
 
 SAFETY RAILS: QUEUE_AUTO_COMMIT (off by default: every plan waits for Slack Approve), QUEUE_MAX_
-COMMITS_PER_DAY (checked before every commit; the rest waits for the next UTC
-day), a circuit breaker (3 consecutive failed jobs pause the queue), and a
+COMMITS_PER_DAY (checked before every UNATTENDED commit; the rest waits for the next UTC
+day -- a person's Approve commits through approval.py and is not counted or capped,
+nor stopped by the pause), a circuit breaker (3 consecutive failed jobs pause the queue), and a
 manual pause, checked before EVERY commit rather than once per job.
 
 FAILURES. A commit is NEVER retried. After any commit that did not report
@@ -254,7 +255,7 @@ def _post(job: jobs.Job, index: int, prepared, notes=()) -> None:
         span=(job.segments[index]["from"], job.segments[index]["to"]))
 
 
-AWAITING_APPROVAL = "awaiting approval in Slack"
+AWAITING_APPROVAL = jobs.AWAITING_APPROVAL_DETAIL
 
 
 def await_approval(job: jobs.Job, index: int, prepared) -> None:
@@ -715,9 +716,11 @@ def expire_held() -> list[str]:
                 "the approval for the held plan expired",
                 only_from=(jobs.STATUS_HELD,),
             ):
+                what = ("its plan waiting for approval" if jobs.is_awaiting_approval(job)
+                        else "its held plan")
                 slack.post_notice(
                     f":hourglass: Queue job `{job.job_id}` ({_child_line(job.child_id)}) was "
-                    f"cancelled: its held plan expired without an answer.\n"
+                    f"cancelled: {what} expired without an answer.\n"
                     + "\n".join(_exists_lines(job))
                 )
                 cancelled.append(job.job_id)
