@@ -278,6 +278,11 @@ class DryRun:
         payers = self._famly.bill_payers(plan["siteId"])
         decision = bill_payers.decide(context.get("contacts") or [], payers, child_id)
         plan["billPayer"] = decision.as_plan()
+        if decision.status == bill_payers.WOULD_ATTACH:
+            # The children the matched payer already bills (ids only), for the Gate A question; shown, not hashed.
+            matched = next((p for p in payers or [] if p.id == decision.bill_payer_id), None)
+            others = sorted(str(c) for c in (matched.children if matched else {}) if str(c) != str(child_id))
+            plan["billPayer"]["otherChildIds"] = others
         if decision.flag:
             plan["warnings"].append(decision.flag)
         entry = next((c for c in plan.get("contacts") or [] if c.get("isBillPayer")), None)
@@ -772,7 +777,7 @@ def hashed_plan(plan: dict) -> dict:
     if isinstance(view.get("billPayer"), dict):
         # The field NAMES that differ are shown, not approved: only the decision, the
         # matched id and the candidate count are part of the digest.
-        view["billPayer"] = {k: v for k, v in view["billPayer"].items() if k != "differs"}
+        view["billPayer"] = {k: v for k, v in view["billPayer"].items() if k not in ("differs", "otherChildIds")}
     if isinstance(view.get("contacts"), list):
         view["contacts"] = [
             {k: v for k, v in c.items() if k not in UNHASHED_CONTACT_FIELDS}

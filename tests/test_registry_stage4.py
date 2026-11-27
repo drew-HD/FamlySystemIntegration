@@ -290,9 +290,9 @@ class WorkerJoinTests(Phase2Case):
     def test_an_exact_match_joins_after_gate_a_and_creates_no_child(self):
         self.run_to_approval()
         gate = self.notify.gates[-1][0]
-        self.assertIn("join the ad hoc child", gate)
-        self.assertIn(ADHOC_CHILD, gate)
-        self.assertNotIn("Zara", gate)                     # no name in Gate A
+        self.assertIn(f"as the ad hoc child *Zara Quillfeather* (Famly id {ADHOC_CHILD})", gate)
+        self.assertIn("will be joined", gate)
+        self.assertNotIn("2024-01-15", gate)               # never the date of birth
         self.approve()
         result = self.run_worker()
         self.assertEqual(self.famly.child_creates, [])
@@ -350,7 +350,7 @@ class WorkerJoinTests(Phase2Case):
                                                approval.same_child_value(job_id, child_id, nonce), "U1"),
                          approval.MSG_SAME_NO)
         self.run_worker()
-        self.assertIn("create the child", self.notify.gates[-1][0])
+        self.assertIn("Child does not exist in Famly and will be created.", self.notify.gates[-1][0])
         self.approve()
         self.run_worker()
         self.assertEqual(len(self.famly.child_creates), 1)

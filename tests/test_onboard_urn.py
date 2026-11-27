@@ -187,9 +187,8 @@ class WorkerTests(UrnCase):
     def test_the_approved_urn_is_written_to_hubspot_then_sent_to_famly(self):
         self.run_to_approval()
         text = self.notify.gates[-1][0]
-        self.assertIn(FIRST, text)
-        self.assertIn("NEW URN", text)
-        self.assertIn("Famly writes planned: 1 child", text)
+        self.assertIn(f"Child URN: to be created ({FIRST})", text)
+        self.assertIn("• Child Zara Quillfeather to be created", text)
         self.approve()
         self.assertEqual(self.run_worker()["status"], store.DONE)
         self.assertEqual(self.sent_urn(), FIRST)

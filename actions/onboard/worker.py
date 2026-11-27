@@ -74,6 +74,7 @@ from actions.onboard import (
     store,
     summary_check,
 )
+from actions.onboard import approval as approval_mod
 from actions.onboard import bill_payer_writes
 from actions.onboard_dry_run import bill_payers as bill_payer_scan
 from actions.onboard_dry_run import derive
@@ -255,7 +256,8 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> dict:
 
     if run_mode == config.MODE_DRY:
         deps.notifier.notice(notifier_mod.gate_text(
-            plan, digest, run_mode, this_job_child_id=_this_jobs_child(job)))
+            plan, digest, run_mode, this_job_child_id=_this_jobs_child(job),
+            details=notifier_mod.gate_details(plan, context, deps.registry)))
         store.set_status(job.id, store.DRY_DONE, plan_hash=digest)
         return {}
 
@@ -271,7 +273,8 @@ def _process(job: store.Job, deps: Deps, run_mode: str) -> dict:
             differing = _differing_sections(job.plan_sections, plan_section_hashes(plan))
             logger.warning("onboard: plan unstable job=%s sections=%s", job.id, differing)
             raise StopJob(store.NEEDS_REVIEW, PLAN_UNSTABLE, detail=differing)
-        _ask_for_approval(job, deps, plan, digest, run_mode, plan_changed=job.approved_hash is not None)
+        _ask_for_approval(job, deps, plan, digest, run_mode, plan_changed=job.approved_hash is not None,
+                          context=context)
         return {}
 
     return _write_phase(job, deps, plan, context, digest)
@@ -337,7 +340,7 @@ def _differing_sections(before: dict | None, after: dict) -> list[str]:
     ]
 
 
-def _ask_for_approval(job, deps, plan, digest, run_mode, plan_changed: bool) -> None:
+def _ask_for_approval(job, deps, plan, digest, run_mode, plan_changed: bool, context: dict | None = None) -> None:
     # A fresh nonce per ask: only THIS message's buttons can approve it.
     nonce = secrets.token_hex(8)
     # Compare-and-set: only the run that still holds the claim may ask. A run that
@@ -352,8 +355,13 @@ def _ask_for_approval(job, deps, plan, digest, run_mode, plan_changed: bool) -> 
                 job.id, plan_changed, digest, plan_section_hashes(plan))
     text = notifier_mod.gate_text(
         plan, digest, run_mode, plan_changed=plan_changed,
-        this_job_child_id=_this_jobs_child(job))
-    ref = deps.notifier.gate(text, job.id, digest, nonce)
+        this_job_child_id=_this_jobs_child(job),
+        details=notifier_mod.gate_details(plan, context, deps.registry))
+    # The bill payer's email matched an existing payer: the buttons ask same / siblings / different.
+    if notifier_mod.bill_payer_question(plan) and hasattr(deps.notifier, "gate_bill_payer"):
+        ref = deps.notifier.gate_bill_payer(text, job.id, digest, nonce)
+    else:
+        ref = deps.notifier.gate(text, job.id, digest, nonce)
     if ref is None:
         # Nobody can approve a message that never arrived: do not wait for it.
         store.transition(job.id, store.AWAITING_APPROVAL, store.HELD,
@@ -488,7 +496,33 @@ def _write_phase(job, deps, plan, context, digest) -> dict:
         deps.notifier.notice(notifier_mod.notice_text(deal_id, f"✅ {summary}", codes, bill_payer_footer))
     _admin_notice(deps, deal_id, codes)
     _join_summary(deps, job, child, join)
+    _bill_payer_choice_notice(job, deps, plan, deal, child, bill_payer)
     return info
+
+
+def _bill_payer_choice_notice(job, deps, plan, deal, child: "ChildResult", bill_payer) -> None:
+    """After a Gate A bill payer answer: "siblings" records the children as siblings in the registry and says so in
+    Slack; "different" asks staff to double check the new payer. Names in Slack only (the exception). Never raises."""
+    choice = job.bill_payer_choice
+    if bill_payer is None or choice not in (approval_mod.CHOICE_SIBLINGS, approval_mod.CHOICE_DIFFERENT):
+        return
+    try:
+        from actions.registry.match import deal_child_name
+        other_ids = (plan.get("billPayer") or {}).get("otherChildIds") or []
+        names = [(deps.registry.child_name(cid) if deps.registry is not None else None) or f"child {cid}"
+                 for cid in other_ids]
+        child_name = deal_child_name(deal) or None
+        if choice == approval_mod.CHOICE_SIBLINGS and bill_payer.code in (bill_payer_scan.ATTACHED,
+                                                                          bill_payer_scan.PRESENT):
+            code = (deps.registry.record_siblings(child.child_id, other_ids, job.deal_id)
+                    if deps.registry is not None and other_ids else "failed")
+            logger.info("onboard: siblings job=%s child=%s others=%s code=%s", job.id, child.child_id,
+                        ",".join(other_ids), code)
+            deps.notifier.notice(notifier_mod.siblings_text(job.deal_id, child_name, names, code != "failed"))
+        elif choice == approval_mod.CHOICE_DIFFERENT and bill_payer.code == bill_payer_scan.CREATED:
+            deps.notifier.notice(notifier_mod.different_payer_text(job.deal_id, child_name, names))
+    except Exception as exc:  # noqa: BLE001 - a notice must never mask the outcome
+        logger.warning("onboard: bill payer choice notice failed for job %s (%s)", job.id, type(exc).__name__)
 
 
 def _write_allocated_urn(job, deps, plan, deal: dict) -> str | None:
@@ -690,7 +724,9 @@ def _bill_payer_stage(job, deps, plan, context, child: "ChildResult"):
             child_id=child.child_id, sleep=deps.sleep,
             unresolved=store.last_outcome_for(job.deal_id, child.child_id, "billpayer", job.id)
             in UNRESOLVED_PAYER_OUTCOMES,
-            lookup=lambda fn: _lookup_with_settle(job, deps, fn, label="bill_payer_readback"))
+            lookup=lambda fn: _lookup_with_settle(job, deps, fn, label="bill_payer_readback"),
+            # Gate A "Different bill payer": a new payer although the email matched one.
+            force_create=job.bill_payer_choice == approval_mod.CHOICE_DIFFERENT)
     except Exception as exc:  # noqa: BLE001 - one stage must never stop the job's end
         logger.error("onboard: bill payer stage hit %s", type(exc).__name__)
         result = bill_payer_writes.StageResult(bill_payer_scan.OUTCOME_UNKNOWN)

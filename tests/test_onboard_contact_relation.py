@@ -35,7 +35,7 @@ class AddTests(RelationCase):
         self.enqueue()
         self.assertEqual(self.run_worker()["status"], store.AWAITING_APPROVAL)
         text = self.notify.gates[0][0]
-        self.assertIn("Famly writes planned: 0 child, 0 contact(s), 1 contact relation(s)", text)
+        self.assertIn("*Summary*\n• Contact Ada Lovelace: relation set to Parent\n\n", text)
         self.approve()
         result = self.run_worker()
         self.assertEqual(result["status"], store.DONE)
@@ -102,9 +102,10 @@ class AddTests(RelationCase):
         self.run_to_approval()
         self.approve()
         self.run_worker()
-        blob = self.all_output()
+        blob = self.private_output()
         for value in PII:
             self.assertNotIn(value, blob, value)
+        self.assert_gate_is_slack_safe()
 
 
 class BlankRelationTests(RelationCase):

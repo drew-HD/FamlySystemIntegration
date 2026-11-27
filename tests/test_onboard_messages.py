@@ -196,12 +196,13 @@ class StaffMessageTests(Phase2Case):
         self.run_through()
         self.hub.contacts["c2"]["mobilephone"] = "not a number"
         self.hub.contacts["c2"]["phone"] = ""
-        texts = list(self.notify.notices) + [g[0] for g in self.notify.gates]
+        texts = list(self.notify.notices)          # Gate A may name people: assert_gate_is_slack_safe covers it
         texts.append(notifier.notice_text(DEAL, "x", self.EXAMPLE))
         texts.append(notifier.admin_notice_text(DEAL, self.EXAMPLE))
         for text in texts:
             for value in PII:
                 self.assertNotIn(value, text.casefold())
+        self.assert_gate_is_slack_safe()
 
 
 class PhoneNormaliserTests(unittest.TestCase):

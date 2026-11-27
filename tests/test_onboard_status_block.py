@@ -113,8 +113,8 @@ class LivePlanTests(Phase2Case):
         lines = plan_status.block(plan)
         self.assertEqual(lines[-1], messages.state("nothing_to_write"))
         text = notifier.gate_text(plan, plan_hash(plan), "dry")
-        self.assertIn("Famly writes planned: 0 child, 0 contact(s)", text)
-        self.assertIn(messages.state("nothing_to_write"), text)
+        self.assertIn("*Summary*\n" + messages.state("nothing_to_write"), text)
+        self.assertIn("Contacts to be created: none", text)
         result = dry_runner.run([DEAL], self.hub, FamlyReads(self.famly, site_ids=[SITE_ID]))
         self.assertEqual(result["statusBlocks"][DEAL][-1], messages.state("nothing_to_write"))
 
@@ -138,12 +138,11 @@ class LivePlanTests(Phase2Case):
         self.assertNotEqual(plan_hash(marked), plan_hash(plain))
         self.assertEqual(plan_status.block(marked)[0], messages.state("child_would_create_test"))
 
-    def test_the_gate_message_holds_no_value_from_the_deal(self):
+    def test_the_gate_message_holds_no_phone_address_or_date_of_birth(self):
         self.run_to_approval()
         text = self.notify.gates[0][0]
-        self.assertIn(messages.state("child_would_create"), text)
-        for value in PII:
-            self.assertNotIn(value, text.casefold(), value)
+        self.assertIn("Child does not exist in Famly and will be created.", text)
+        self.assert_gate_is_slack_safe()
 
 
 if __name__ == "__main__":

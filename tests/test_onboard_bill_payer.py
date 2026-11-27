@@ -330,7 +330,7 @@ class PlanTests(BPCase):
         self.famly.payers.append(payer(self.email, pid="the-one"))
         self.assertEqual(self.plan()["billPayer"],
                          {"status": "would_attach", "flag": None, "billPayerId": "the-one", "matches": 1,
-                          "recipient": "will_add"})
+                          "otherChildIds": [], "recipient": "will_add"})
 
     def test_the_hash_covers_the_decision_and_changes_when_it_does(self):
         create = dry_runner.plan_hash(self.plan())
@@ -367,12 +367,12 @@ class PlanTests(BPCase):
         self.assertFalse(worker.famly_writes_planned({**base, "billPayer": {"status": "flagged"}}))
         self.assertFalse(worker.famly_writes_planned(base))
 
-    def test_the_gate_message_shows_the_decision_without_personal_data(self):
+    def test_the_gate_message_shows_the_decision_without_contact_details(self):
         self.run_to_approval()
         text = self.notify.gates[0][0]
-        self.assertIn("Bill payer: will be created.", text)
-        for value in PII:
-            self.assertNotIn(value, text.casefold())
+        self.assertIn("Ada Lovelace will be created and linked as the bill payer.", text)
+        self.assertIn("• Bill payer Ada Lovelace to be created and linked", text)
+        self.assert_gate_is_slack_safe()                    # names and emails only: no phone, address or DOB
 
     def test_a_changed_bill_payer_decision_re_asks_under_the_existing_rules(self):
         self.run_to_approval()
@@ -380,7 +380,7 @@ class PlanTests(BPCase):
         self.famly.payers.append(payer(self.email, pid="appeared"))       # the situation changed
         self.assertEqual(self.run_worker()["status"], store.AWAITING_APPROVAL)
         self.assertEqual(len(self.notify.gates), 2)
-        self.assertIn("will be linked to the child", self.notify.gates[1][0])
+        self.assertIn("Bill payer may already exist on", self.notify.gates[1][0])
         self.assertEqual(self.famly.bp_writes, [])
 
 
@@ -636,7 +636,7 @@ class SwitchTests(BPCase):
         self.assertEqual(result["status"], store.DRY_DONE)
         self.assertEqual(self.famly.bp_writes, [])
         self.assertEqual(self.famly.child_creates, [])
-        self.assertTrue(any("Bill payer: will be created." in n for n in self.notify.notices))
+        self.assertTrue(any("will be created and linked as the bill payer." in n for n in self.notify.notices))
 
     def test_the_flag_off_in_live_mode_performs_no_bill_payer_read_or_write(self):
         os.environ["ONBOARD_BILL_PAYER"] = "off"
@@ -711,9 +711,12 @@ class PrivacyTests(BPCase):
         self.famly.payers.append(payer(self.email, {}, pid="the-one",
                                        details={"name": "Zed Zebra", "phone": "+447700900999"}))
         self.run_through()
-        blob = self.all_output()
+        blob = self.private_output()
         for value in PII + ["zed zebra", "900999"]:
             self.assertNotIn(value.casefold(), blob, value)
+        gate = self.assert_gate_is_slack_safe()
+        for value in ("zed zebra", "900999"):                # the Famly payer's own details never shown
+            self.assertNotIn(value, gate)
         self.assertEqual(self.job().bill_payer_id, "the-one")               # the id is the only thing kept
         with contextlib.closing(sqlite3.connect(store.store_path())) as connection:
             row = connection.execute("SELECT * FROM onboard_jobs").fetchone()
@@ -787,44 +790,41 @@ if __name__ == "__main__":
 
 
 class GateACountTests(BPCase):
-    """The Gate A "writes planned" count equals the writes the worker will make."""
+    """The Gate A *Summary* lists exactly the writes the worker will make, one bullet each."""
 
-    def text(self, child_status, contact_statuses, bill_payer):
+    def summary(self, child_status, contact_statuses, bill_payer):
         from actions.onboard import notifier
         plan = {"dealId": "1", "siteCode": "S", "groupTitle": "G",
                 "child": {"status": child_status},
-                "contacts": [{"status": st, "isBillPayer": i == 0} for i, st in enumerate(contact_statuses)],
+                "contacts": [{"status": st, "isBillPayer": i == 0, "hubspotContactId": f"c{i}"}
+                             for i, st in enumerate(contact_statuses)],
                 "dates": {}, "warnings": []}
         if bill_payer is not None:
             plan["billPayer"] = {"status": bill_payer}
-        return notifier.gate_text(plan, "h" * 64, "live")
+        text = notifier.gate_text(plan, "h" * 64, "live")
+        return text.split("*Summary*\n", 1)[1].split("\n\n", 1)[0].splitlines()
 
-    def test_create_cases(self):
-        """Folded cases: create; attach_counts_one_write."""
-        for _i, (_p0,) in enumerate([
-            ("would_create",),
-            ("would_attach",),
-        ]):
-            with self.subTest(case=_i):
-                self.assertIn("Famly writes planned: 1 child, 2 contact(s), 1 bill payer",
-                              self.text("child_would_create", ["would_create"] * 2, _p0))
+    def test_create_and_attach_are_one_bill_payer_bullet(self):
+        create = self.summary("child_would_create", ["would_create"] * 2, "would_create")
+        self.assertEqual(len(create), 4)
+        self.assertEqual(create[-1], "• Bill payer contact c0 to be created and linked")
+        attach = self.summary("child_would_create", ["would_create"] * 2, "would_attach")
+        self.assertEqual(attach[-1], "• Bill payer contact c0 may already exist, please confirm or deny")
 
-    def test_flagged_and_present_count_zero(self):
+    def test_flagged_and_present_are_no_bullet(self):
         for status in ("flagged", "present"):
-            self.assertIn("Famly writes planned: 1 child, 2 contact(s), 0 bill payer",
-                          self.text("child_would_create", ["would_create"] * 2, status))
+            self.assertEqual(len(self.summary("child_would_create", ["would_create"] * 2, status)), 3)
 
-    def test_an_existing_child_counts_zero_child_writes(self):
-        self.assertIn("Famly writes planned: 0 child, 0 contact(s), 1 bill payer",
-                      self.text("child_found", ["present"], "would_create"))
+    def test_an_existing_child_has_no_child_bullet(self):
+        self.assertEqual(self.summary("child_found", ["present"], "would_create"),
+                         ["• Bill payer contact c0 to be created and linked"])
 
-    def test_no_bill_payer_section_leaves_the_line_as_before(self):
-        self.assertIn("Famly writes planned: 1 child, 1 contact(s)\n",
-                      self.text("child_would_create", ["would_create"], None))
+    def test_no_bill_payer_section_has_no_bill_payer_bullet(self):
+        self.assertEqual(len(self.summary("child_would_create", ["would_create"], None)), 2)
 
-    def test_the_real_message_for_a_new_deal_counts_the_payer(self):
+    def test_the_real_message_for_a_new_deal_lists_the_payer(self):
         self.run_to_approval()
-        self.assertIn("Famly writes planned: 1 child, 2 contact(s), 1 bill payer", self.notify.gates[-1][0])
+        self.assertIn("• Bill payer Ada Lovelace to be created and linked", self.notify.gates[-1][0])
 
 
 class UnconfirmedPayerGuardTests(BPCase):
