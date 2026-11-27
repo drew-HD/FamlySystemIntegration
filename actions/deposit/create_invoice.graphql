@@ -1,0 +1,51 @@
+mutation CreateInvoice($requests: [InvoiceRequest!]!, $invoiceDate: LocalDate, $dueDate: LocalDate!, $mode: InvoiceMode!, $range: ClosedLocalDateRange!, $notify: Boolean!) {
+  finance {
+    invoices {
+      create(
+        requests: $requests
+        invoiceDate: $invoiceDate
+        dueDate: $dueDate
+        mode: $mode
+        range: $range
+        notify: $notify
+      ) {
+        invoices {
+          __typename
+          ... on InvoiceSuccess {
+            invoice {
+              billPayer {
+                billPayerId
+                __typename
+              }
+              invoiceDate
+              invoiceId
+              title
+              total
+              __typename
+            }
+            __typename
+          }
+          ... on InvoiceFailure {
+            billPayer {
+              billPayerId
+              __typename
+            }
+            errors {
+              message
+              code
+              __typename
+            }
+            __typename
+          }
+        }
+        runs {
+          runId
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}
