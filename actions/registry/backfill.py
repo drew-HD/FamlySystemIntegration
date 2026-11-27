@@ -196,8 +196,33 @@ def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict],
             if deal_id in stage_of and derive.norm_stage(stage_of[deal_id]) not in CLOSED_STAGES:
                 no_child.append((deal_id, kind, stage_of[deal_id]))
     shared_urns = {urn for urn, ids in by_urn.items() if len(ids) > 1}
+    closed = {deal_id for deal_id, stage in stage_of.items() if derive.norm_stage(stage) in CLOSED_STAGES}
     return {"children": rows, "deals": deals, "site_codes": site_codes, "shared_urns": shared_urns,
-            "no_child_deals": no_child}, report
+            "no_child_deals": no_child, "closed_deals": closed,
+            "child_deals": _by_child(candidates),
+            "deal_names": deal_child_names(operations_deals + adhoc_deals + (weekend_deals or []))}, report
+
+
+def _by_child(candidates: dict) -> dict:
+    """child id -> every deal any source tied to it this run (linked or not)."""
+    out: dict = {}
+    for deal_id, child_ids in candidates.items():
+        for child_id in child_ids:
+            out.setdefault(child_id, set()).add(deal_id)
+    return out
+
+
+def deal_child_names(deals: list[dict]) -> dict:
+    """deal id -> the child's name on the deal (full name, else first + last). In memory only: the refresh shows
+    it in Slack and reports/ for a deal whose child is not in Famly. Never logged."""
+    from core import hubspot as hubspot_cfg
+    names = {}
+    for deal in deals:
+        name = str(deal.get(hubspot_cfg.CHILD_FULL_NAME_PROPERTY) or "").strip() or " ".join(
+            str(deal.get(p) or "").strip() for p in hubspot_cfg.CHILD_NAME_PROPERTIES)
+        if name.strip():
+            names[str(deal["id"])] = " ".join(name.split())
+    return names
 
 
 def write(plan: dict, report: Report) -> Counter:
@@ -263,6 +288,9 @@ def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = Non
     logger.info("registry backfill %s: %s children, %s deals linked", summary["mode"],
                 summary["famly_children"], sum(kinds.values()))
     summary["_no_child_deals"] = plan["no_child_deals"]
+    summary["_closed_deals"] = plan["closed_deals"]          # the refresh uses these three; the CLI drops them
+    summary["_child_deals"] = plan["child_deals"]
+    summary["_deal_names"] = plan["deal_names"]
     return summary, report
 
 
