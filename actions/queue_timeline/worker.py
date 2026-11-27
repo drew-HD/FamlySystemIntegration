@@ -16,7 +16,10 @@ MODES (QUEUE_MODE):
     dry_run   (the default) commits NOTHING. Each segment is previewed on its
               own -- a later plan cannot be chained to one that does not exist
               yet -- rounded and clean-checked, and the result goes in a digest.
-    auto      commits clean plans, in order, each verified by read-back.
+    auto      works through the plans in order, each verified by read-back. By
+              default (QUEUE_AUTO_COMMIT off) EVERY plan is posted to Slack and
+              the job waits for Approve (`await_approval`); with
+              QUEUE_AUTO_COMMIT=on a clean plan commits without a person.
 
 A PLAN IS CLEAN only if it validated, raised no warning (the flattener's or
 Famly's; the informational funding-limit note aside), rounding succeeded or was
@@ -26,9 +29,10 @@ and the normal Slack approval message is posted for that plan, with the
 reasons. A human approving it returns the job to the queue (approval.py ->
 jobs.release_after_approval) and the worker carries on.
 
-SAFETY RAILS: QUEUE_ALLOWED_INSTITUTIONS (anything else is held), QUEUE_MAX_
-COMMITS_PER_DAY (checked before every commit; the rest waits for the next UTC
-day), a circuit breaker (3 consecutive failed jobs pause the queue), and a
+SAFETY RAILS: QUEUE_AUTO_COMMIT (off by default: every plan waits for Slack Approve), QUEUE_MAX_
+COMMITS_PER_DAY (checked before every UNATTENDED commit; the rest waits for the next UTC
+day -- a person's Approve commits through approval.py and is not counted or capped,
+nor stopped by the pause), a circuit breaker (3 consecutive failed jobs pause the queue), and a
 manual pause, checked before EVERY commit rather than once per job.
 
 FAILURES. A commit is NEVER retried. After any commit that did not report
@@ -126,14 +130,10 @@ def max_commits_per_day() -> int:
     return _env_number("QUEUE_MAX_COMMITS_PER_DAY", DEFAULT_MAX_COMMITS_PER_DAY, int)
 
 
-def allowed_institutions() -> set[str]:
-    """QUEUE_ALLOWED_INSTITUTIONS, comma separated. Empty means NONE: nothing
-    is committed automatically until institutions are listed."""
-    return {
-        item.strip().upper()
-        for item in os.environ.get("QUEUE_ALLOWED_INSTITUTIONS", "").split(",")
-        if item.strip()
-    }
+def auto_commit() -> bool:
+    """QUEUE_AUTO_COMMIT=on: a clean plan commits without a person. Anything else (and unset, the default):
+    every plan is posted to Slack and waits for Approve. (Replaces QUEUE_ALLOWED_INSTITUTIONS, 2026-11-27.)"""
+    return os.environ.get("QUEUE_AUTO_COMMIT", "").strip().lower() == "on"
 
 
 # --------------------------------------------------------------------------- #
@@ -247,11 +247,31 @@ def finish(job_id: str, detail: str | None = None, *, status: str | None = None)
         jobs.state_set("consecutive_failures", "0")
 
 
+def _post(job: jobs.Job, index: int, prepared, notes=()) -> None:
+    """The plan's approval message: "plan i of n", the advance period, and `notes` under Warnings."""
+    plan_write_web.post_prepared(
+        prepared, position=(index, len(job.segments)),
+        advance=engine.advance_period(job.payload or {}, job.segments[index]), notes=notes,
+        span=(job.segments[index]["from"], job.segments[index]["to"]))
+
+
+AWAITING_APPROVAL = jobs.AWAITING_APPROVAL_DETAIL
+
+
+def await_approval(job: jobs.Job, index: int, prepared) -> None:
+    """QUEUE_AUTO_COMMIT off (the default): a clean plan is posted for approval and the job waits, held on this
+    plan. Approve commits it and releases the job (approval.py -> jobs.release_after_approval), exactly as for a
+    held plan; Reject cancels the job. NOT a problem: no hold codes, no needs_attention on the deal, no Slack
+    held line."""
+    _post(job, index, prepared)
+    jobs.set_status(job.job_id, jobs.STATUS_HELD, AWAITING_APPROVAL, preview_id=prepared.preview_id)
+    logger.info("QUEUE JOB AWAITING APPROVAL job_id=%s index=%d", job.job_id, index)
+
+
 def hold(job: jobs.Job, index: int, prepared, reasons: list[str]) -> None:
     """Hold the job on this plan: post the normal approval message, with the why."""
     why = "; ".join(reasons)
-    heading = f"*{_where(job, index)}*\n:pause_button: Held for approval — {why}"
-    plan_write_web.post_prepared(prepared, heading=heading)
+    _post(job, index, prepared, notes=[f"Held for approval: {r}" for r in reasons])
     jobs.set_status(job.job_id, jobs.STATUS_HELD, why, preview_id=prepared.preview_id)
     logger.warning("QUEUE JOB HELD job_id=%s index=%d: %s", job.job_id, index, why)
     _flag_held(job, index, prepared, reasons)
@@ -532,8 +552,6 @@ def _run_dry(job: jobs.Job) -> None:
         reasons = clean_reasons(
             prepared, requested, _allow_zero_estimate(job, index)
         )
-        if job.institution.upper() not in allowed_institutions():
-            reasons.append(f"institution {job.institution or 'unknown'} is not allowed to auto-commit")
         estimates = []
         if prepared.status == 200:
             estimates = [
@@ -578,12 +596,12 @@ def _do_segment(job: jobs.Job) -> bool:
     if prepared.status != 200:
         fail(job.job_id, f"{_where(job, index)} {reasons[0]}")
         return False
-    if job.institution.upper() not in allowed_institutions():
-        reasons.append(
-            f"institution {job.institution or 'unknown'} is not in QUEUE_ALLOWED_INSTITUTIONS"
-        )
+    _record_summary(job, index, prepared)
     if reasons:
         hold(job, index, prepared, reasons)
+        return False
+    if not auto_commit():
+        await_approval(job, index, prepared)
         return False
 
     # Every check that can stop a commit runs HERE, immediately before it --
@@ -699,9 +717,11 @@ def expire_held() -> list[str]:
                 "the approval for the held plan expired",
                 only_from=(jobs.STATUS_HELD,),
             ):
+                what = ("its plan waiting for approval" if jobs.is_awaiting_approval(job)
+                        else "its held plan")
                 slack.post_notice(
                     f":hourglass: Queue job `{job.job_id}` ({_child_line(job.child_id)}) was "
-                    f"cancelled: its held plan expired without an answer.\n"
+                    f"cancelled: {what} expired without an answer.\n"
                     + "\n".join(_exists_lines(job))
                 )
                 cancelled.append(job.job_id)
@@ -714,6 +734,55 @@ def _priced_at_zero(prepared) -> bool:
     if not states:
         return False
     return all(rounding.to_decimal(s.monthly_estimate) == 0 for s in states)
+
+
+def booked_days(payload: dict | None) -> int:
+    """The weekdays the deal books (a non-empty monday..friday slot)."""
+    payload = payload or {}
+    return sum(1 for key, _day in hubspot_flatten._DAYS if str(payload.get(key) or "").strip())
+
+
+def _monthly_amount(prepared) -> str | None:
+    """The plan's monthly amount for the summary: its FIRST pricing period's rounded target, or that period's
+    estimate when rounding did not need to change it. None when it cannot be read."""
+    states = getattr(prepared.preview.plan, "plan_states", None) or []
+    if not states:
+        return None
+    first = states[0]
+    start = str(getattr(first, "from_", None) or "")[:10]
+    match = [p for p in prepared.rounded_periods or [] if str(p.from_ or "")[:10] == start]
+    value = match[0].target if len(match) == 1 else rounding.to_decimal(first.monthly_estimate)
+    return None if value is None else f"{Decimal(str(value)):,.2f}"
+
+
+def _record_summary(job: jobs.Job, index: int, prepared) -> None:
+    """The figures the plan creation summary shows, kept on the segment (figures only). Never raises."""
+    try:
+        jobs.record_segment(job.job_id, index, summary={
+            "days": booked_days(job.payload), "monthly": _monthly_amount(prepared)})
+    except Exception:  # noqa: BLE001 - the summary is a nicety; it never changes the plan
+        logger.warning("QUEUE summary figures not recorded job_id=%s index=%d", job.job_id, index)
+
+
+def _created_lines(job: jobs.Job) -> list[str]:
+    """One plain line per plan the job created (Drew, 2026-11-27): no child id, job id or plan id."""
+    name = child_lookup.lookup_child_name(job.child_id) or "Child"
+    total = len(job.segments)
+    lines = []
+    for index, segment in enumerate(job.segments):
+        if not segment.get("plan_id"):
+            continue
+        summary = segment.get("summary") or {}
+        days = summary.get("days")
+        funded = "funded " if segment.get("funded") else ""
+        unit = "day" if days == 1 else "days"
+        days_text = f"unknown {funded}days a week" if days is None else f"{days} {funded}{unit} a week"
+        monthly = summary.get("monthly")
+        start = slack.fmt_date(segment.get("from")) or "unknown"
+        span = f"from {start} to {slack.fmt_date(segment['to'])}" if segment.get("to") else f"from {start} onwards"
+        lines.append(f"• {name} plan {index + 1} of {total} created in Famly. {days_text}, "
+                     f"{'£' + monthly if monthly else 'unknown amount'} per month, {span}.")
+    return lines
 
 
 def _digest_lines(job: jobs.Job) -> list[str]:
@@ -750,18 +819,22 @@ def post_digest(now: datetime | None = None, *, drained: bool = False) -> bool:
 
     # Report what the jobs themselves were, not just the mode now: a digest can
     # carry dry runs and real ones together after the mode was switched over.
-    dry_count = sum(1 for j in pending if j.status == jobs.STATUS_DRY_DONE)
-    heading = (
-        f":white_check_mark: *Queue digest* ({mode()}) — {len(pending)} job(s) finished"
-        + (
-            f" ({dry_count} DRY RUN: nothing was committed)"
-            if dry_count
-            else ""
-        )
-    )
-    lines = [heading]
-    for job in pending:
-        lines += _digest_lines(job)
+    # Finished real jobs: the plain plan creation summary. Dry runs keep their own digest lines.
+    real = [j for j in pending if j.status != jobs.STATUS_DRY_DONE]
+    dry = [j for j in pending if j.status == jobs.STATUS_DRY_DONE]
+    lines = []
+    created = [line for job in real for line in _created_lines(job)]
+    if created:
+        lines += [":white_check_mark: *Plan creation summary*"] + created
+    if dry:
+        lines.append(f":white_check_mark: *Queue digest* ({mode()}) — {len(dry)} job(s) finished "
+                     f"({len(dry)} DRY RUN: nothing was committed)")
+        for job in dry:
+            lines += _digest_lines(job)
+    if not lines:                       # finished jobs that created nothing: nothing to say
+        jobs.mark_digested([j.job_id for j in pending])
+        jobs.state_set("last_digest_at", now.isoformat())
+        return False
     if slack.post_notice("\n".join(lines)):
         jobs.mark_digested([j.job_id for j in pending])
         jobs.state_set("last_digest_at", now.isoformat())
@@ -826,7 +899,7 @@ def status() -> dict:
         # always agree on what "today" is.
         "commitsToday": jobs.commits_today(_now()),
         "maxCommitsPerDay": max_commits_per_day(),
-        "allowedInstitutions": sorted(allowed_institutions()),
+        "autoCommit": auto_commit(),
         "maxMonthly": str(max_monthly()),
         "jobs": jobs.counts(),
     }

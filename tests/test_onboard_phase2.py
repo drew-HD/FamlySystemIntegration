@@ -579,7 +579,7 @@ class GateATests(Phase2Case):
         text, job_id, digest = self.notify.gates[0]
         self.assertEqual((job_id, digest), (job.id, job.plan_hash))
         for part in (DEAL, "https://app.hubspot.com/contacts/12345/record/0-3/" + DEAL,
-                     "Child: *Zara Quillfeather*", "Site: Westminster", "Littlewings", "Start date: 15 January 2026",
+                     "Child: *Zara Quillfeather*", "Site: Westminster", "Littlewings", "Start date: 15/01/2026",
                      "Child does not exist in Famly and will be created.", "Contacts to be created:\n",
                      "Ada Lovelace (Ada.L@Example.org)", "• Contact Ada Lovelace to be created", "*Warnings*"):
             self.assertIn(part, text)
@@ -1856,12 +1856,12 @@ class EndDateTests(Phase2Case):
 
     def test_the_gate_message_says_when_the_end_date_was_defaulted(self):
         self.run_to_approval()
-        self.assertIn("End date: 31 August 2028 (default: 31 August after the 4th birthday)",
+        self.assertIn("End date: 31/08/2028 (default: 31 August after the 4th birthday)",
                       self.notify.gates[0][0])
         store._reset_for_tests()
         self.hub.deals[DEAL]["end_date"] = "2027-03-31"
         self.run_to_approval()
-        self.assertIn("End date: 31 March 2027", self.notify.gates[1][0])
+        self.assertIn("End date: 31/03/2027", self.notify.gates[1][0])
         self.assertNotIn("default", self.notify.gates[1][0])
         self.assert_gate_is_slack_safe()                  # the real dates, but never the date of birth
 

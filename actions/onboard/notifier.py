@@ -85,7 +85,7 @@ def bill_payer_question(plan: dict) -> bool:
 
 
 def _date(value) -> str | None:
-    return f"{value.day} {value.strftime('%B %Y')}" if value else None
+    return slack.fmt_date(value) if value else None          # dd/mm/yyyy in every Slack message
 
 
 def _others(details: dict) -> str:

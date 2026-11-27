@@ -63,7 +63,7 @@ class LayoutTests(GateCase):
     def test_a_new_child_message_reads_top_to_bottom(self):
         self.run_to_approval()
         text = self.notify.gates[0][0]
-        order = ["Child: *Zara Quillfeather* (<", "Site: Westminster · Room: Littlewings · Start date: 15 January 2026",
+        order = ["Child: *Zara Quillfeather* (<", "Site: Westminster · Room: Littlewings · Start date: 15/01/2026",
                  "Child URN: already present (URN-1)", "*Actions*", "Child does not exist in Famly and will be created.",
                  "Contacts to be created:\nAda Lovelace (Ada.L@Example.org)\nBen Babbage (ben.b@example.org)",
                  "Ada Lovelace will be created and linked as the bill payer.", "*Summary*",

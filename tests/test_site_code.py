@@ -386,8 +386,8 @@ class SiteSummaryTests(SiteTestCase):
         text = self._summary({"label": "Hatching Dragons - City"})
         lines = text.splitlines()
 
-        self.assertTrue(lines[1].startswith("• Site:"))
-        self.assertTrue(lines[2].startswith("• Child:"))
+        self.assertTrue(lines[1].startswith("• Site: Hatching Dragons - City · Room:"))
+        self.assertIn(" plan 1 of 1 approval* ", lines[0])
 
 
 if __name__ == "__main__":

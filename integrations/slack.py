@@ -324,6 +324,31 @@ def _session_price(booking: Any, pricing_group_id: str | None) -> Any | None:
     return None
 
 
+def fmt_date(value: Any) -> str | None:
+    """Any date (a date, or text starting yyyy-mm-dd) as dd/mm/yyyy, the one format for dates in Slack.
+    None for nothing; text that is not a date is returned as it is."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
+    try:
+        return date.fromisoformat(str(value)[:10]).strftime("%d/%m/%Y")
+    except ValueError:
+        return str(value)
+
+
+def fmt_month(value: Any) -> str | None:
+    """A date as mm/yyyy (the advance fee period)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, date):
+        return value.strftime("%m/%Y")
+    try:
+        return date.fromisoformat(str(value)[:10]).strftime("%m/%Y")
+    except ValueError:
+        return str(value)
+
+
 def _last_covered_day(exclusive_to: Any) -> str | None:
     """The day before Famly's (exclusive) plan `to`; the value itself if not a date."""
     if not exclusive_to:
@@ -345,8 +370,18 @@ def build_summary(
     heading: str | None = None,
     rounding: list | None = None,
     funding_clamp: Any = None,
+    facts: dict | None = None,
 ) -> str:
     """Format a previewed plan as plain, scannable Slack text for an approver.
+
+    THE LAYOUT (Drew, 2026-11-27): "<child> plan i of n approval (from dd/mm/yyyy to dd/mm/yyyy)"; site, room,
+    full year or termly, the fee option, the funding type and the advance fee period; the sessions (no prices);
+    the discounts; *Pricing* (weekly total, monthly estimate, rounded); *Other periods*; *Warnings*. Products,
+    per-session prices and the preview id are not shown.
+
+    `facts` (all optional): index, total (the plan's position, default 1 of 1), room, termTimeOnly, fees,
+    funding ("30" or "15" for a funded plan), advance ((from, to) of the advance fee period). Unknown values
+    read "unknown"; nothing here does I/O.
 
     Args:
         plan: the parsed preview plan (read_child_plans.runner.Plan).
@@ -390,28 +425,44 @@ def build_summary(
         so a missing field reads as "unknown" rather than raising.
     """
     if plan is None:
-        return "*Plan preview awaiting approval*\n• (no plan returned)"
+        return "*Plan approval*\n• (no plan returned)"
 
+    facts = facts or {}
     session_titles = session_titles or {}
-    product_titles = product_titles or {}
-    pricing_group_id = _active_pricing_group(plan, today)
 
     child_id = getattr(plan, "child_id", None) or "unknown"
-    date_from = getattr(plan, "from_", None) or "unknown"
+    name = _slack_safe_name(child_name) if isinstance(child_name, str) and child_name.strip() else None
     # Famly's plan `to` is the first day NOT covered; the approver knows the
     # LAST covered day (the leave date), so that is what the line shows.
-    date_to = _last_covered_day(getattr(plan, "to", None)) or "open-ended"
+    date_from = fmt_date(getattr(plan, "from_", None)) or "unknown"
+    date_to = fmt_date(_last_covered_day(getattr(plan, "to", None))) or "open-ended"
+    if facts.get("span"):
+        # A timeline's plan: its own dates (inclusive). A plan that is not the last has no `to` in Famly's
+        # preview (the next plan ends it), so the preview alone would say "open-ended".
+        span_from, span_to = facts["span"]
+        date_from = fmt_date(span_from) or date_from
+        date_to = fmt_date(span_to) or date_to
+    index, total = facts.get("index", 0), facts.get("total", 1)
 
     site_label = (site or {}).get("label") if isinstance(site, dict) else None
+    term = facts.get("termTimeOnly")
+    schedule = "unknown" if term is None else ("Termly" if term else "Full year")
 
     lines = [
-        heading or "*Plan preview awaiting approval*",
-        f"• Site: {site_label or 'unknown'}",
-        child_line(child_id, child_name),
-        f"• Dates: {date_from} → {date_to}",
+        f"*{name or f'Child `{child_id}`'} plan {index + 1} of {total} approval* "
+        f"(from {date_from} to {date_to})",
     ]
+    if heading:
+        lines.append(heading)
+    lines.append(f"• Site: {site_label or 'unknown'} · Room: {facts.get('room') or 'unknown'}")
+    lines.append(f"• {schedule} · Fees: {facts.get('fees') or 'unknown'}")
+    if facts.get("funding"):
+        lines.append(f"• Funding: {facts['funding']} hrs")
+    advance = facts.get("advance")
+    if advance:
+        lines.append(f"• Advance fee: {fmt_month(advance[0]) or 'unknown'} to {fmt_month(advance[1]) or 'unknown'}")
 
-    # --- Sessions ---------------------------------------------------------- #
+    # --- Sessions (no prices) ---------------------------------------------- #
     bookings = sorted(
         _session_bookings(plan), key=lambda b: _day_sort_key(getattr(b, "day", None))
     )
@@ -421,38 +472,9 @@ def build_summary(
         for booking in bookings:
             session_id = getattr(booking, "session_id", None)
             title = session_titles.get(session_id) or session_id or "unknown session"
-            line = f"• {_day_label(getattr(booking, 'day', None))} — {title}"
-
-            price = _session_price(booking, pricing_group_id)
-            if price is not None:
-                line += f" — {_money(price)}"
-
-            lines.append(line)
+            lines.append(f"• {_day_label(getattr(booking, 'day', None))} — {title}")
     else:
         lines.append("*Sessions*\n• None booked.")
-
-    # --- Products (omitted entirely when there are none) ------------------- #
-    products = sorted(
-        _product_bookings(plan),
-        key=lambda b: _day_sort_key(b.get("day") if isinstance(b, dict) else None),
-    )
-    if products:
-        lines.append("")
-        lines.append(f"*Products* ({len(products)})")
-        for product in products:
-            if not isinstance(product, dict):
-                continue
-            product_id = product.get("productId")
-            title = product_titles.get(product_id) or product_id or "unknown product"
-            amount = product.get("amount")
-            amount = "?" if amount is None else amount
-            line = f"• {_day_label(product.get('day'))} — {amount}× {title}"
-
-            booked_price = product.get("bookedPrice")
-            if booked_price is not None:
-                line += f" — {_money(booked_price)}"
-
-            lines.append(line)
 
     # --- Discounts (omitted entirely when there are none) ------------------ #
     discounts = sorted(
@@ -466,41 +488,30 @@ def build_summary(
             title = discount.get("title") or "untitled discount"
             lines.append(f"• {title} — {_discount_amount(discount)}")
 
-    # --- Totals ------------------------------------------------------------ #
-    # Everything below is the pricing period covering today, not simply the
-    # first one: a plan's first period is often already over.
+    # --- Pricing: the period covering today -------------------------------- #
+    # Not simply the first period: a plan's first period is often already over.
     lines.append("")
     states = getattr(plan, "plan_states", None) or []
     current = _current_state(plan, today)
     weekly = getattr(current, "weekly_total", None) if current is not None else None
-    period_start = getattr(current, "from_", None)
+    periods = list(rounding or [])
 
-    if period_start:
-        lines.append(f"*Current pricing* (From {str(period_start)[:10]})")
+    def rounded_for(state) -> str | None:
+        """The rounded target for THIS period, matched by its start date. Rounding leaves out a period that
+        needed no adjustment, so a period without a match shows no rounded line (never another period's)."""
+        start = str(getattr(state, "from_", None) or "")[:10]
+        if start:
+            match = [p for p in periods if str(p.from_ or "")[:10] == start]
+        else:   # a stand-in with no period dates: only an undated single rounding can be this one
+            match = [p for p in periods if not p.from_] if state is current else []
+        return f"{match[0].target:,.2f}" if len(match) == 1 else None
+
+    lines.append("*Pricing*")
     lines.append(f"• Weekly total: {_money(weekly)}")
     lines.append(f"• Monthly estimate: {_money(_current_monthly_estimate(plan, today))}")
-
-    if len(states) > 1:
-        # Flag that the rate moves, and list the OTHER periods on one line so
-        # the approver can see when and to what (a period that has already
-        # ended is listed too: it explains why the figure above is not the
-        # plan's first one).
-        lines.append(f"• _(rate changes during plan — {len(states)} periods)_")
-        others = [
-            f"From {str(getattr(state, 'from_', None) or 'unknown')[:10]} — "
-            f"{_money(getattr(state, 'monthly_estimate', None))}"
-            for state in states
-            if state is not current
-        ]
-        lines.append(f"• Other periods: {'; '.join(others)}")
-
-    # --- Automatic rounding, only when it was applied ----------------------- #
-    periods = list(rounding or [])
-    for period in periods:
-        line = f"• Rounded: {period.estimate:.2f} -> {period.target:.2f}"
-        if len(periods) > 1:
-            line += f" (from {str(period.from_ or 'unknown')[:10]})"
-        lines.append(line)
+    current_rounded = rounded_for(current) if current is not None else None
+    if current_rounded:
+        lines.append(f"• Rounded: {current_rounded}")
 
     # --- Funded hours brought down to the scheduled hours ------------------- #
     if funding_clamp is not None:
@@ -525,17 +536,32 @@ def build_summary(
             hours_part += f" {minutes}m"
         lines.append(f"• Public funding: {_money(amount)} ({hours_part})")
 
-    # --- Warnings (unchanged: the approver must see these) ----------------- #
-    count = len(warnings) if isinstance(warnings, list) else 0
+    # --- Other periods (the rate moves, almost always when the child turns 3) - #
+    others = [state for state in states if state is not current]
+    if others:
+        lines.append("")
+        lines.append("*Other periods*")
+        for state in others:
+            lines.append(f"• Price changes from {fmt_date(getattr(state, 'from_', None)) or 'unknown'} "
+                         "(usually when the child turns 3)")
+            other_rounded = rounded_for(state)
+            lines.append(f"   Monthly estimate: {_money(getattr(state, 'monthly_estimate', None))}"
+                         + (f" · Rounded: {other_rounded}" if other_rounded else ""))
+
+    # --- Warnings (the approver must see these) ---------------------------- #
+    notes = [str(n) for n in facts.get("notes") or []]          # e.g. why the queue held this plan
+    count = (len(warnings) if isinstance(warnings, list) else 0) + len(notes)
     lines.append("")
-    if count:
-        lines.append(f":warning: *{count} warning(s)* — review before approving:")
-        for warning in warnings[:5]:
-            lines.append(f"• {_warning_line(warning)}")
-        if count > 5:
-            lines.append(f"• …and {count - 5} more")
-    else:
-        lines.append("• No warnings returned.")
+    lines.append("*Warnings*")
+    for note in notes:
+        lines.append(f"• {note}")
+    shown = warnings[:5] if isinstance(warnings, list) else []
+    for warning in shown:
+        lines.append(f"• {_warning_line(warning)}")
+    if isinstance(warnings, list) and len(warnings) > 5:
+        lines.append(f"• …and {len(warnings) - 5} more")
+    if not count:
+        lines.append("• None.")
 
     return "\n".join(lines)
 
@@ -574,18 +600,14 @@ def _approval_blocks(summary_text: str, preview_id: str) -> list:
     """The message body: the summary plus Approve / Reject buttons.
 
     Each button carries `preview_id` as its value, so the click can be tied
-    back to the preview that produced it.
+    back to the preview that produced it. The id is not shown, and there is no
+    Adjust & Approve button: plans are rounded automatically (the adjust modal
+    code stays for now, unreachable from new messages).
     """
     return [
         {
             "type": "section",
             "text": {"type": "mrkdwn", "text": summary_text},
-        },
-        {
-            "type": "context",
-            "elements": [
-                {"type": "mrkdwn", "text": f"preview_id: `{preview_id}`"}
-            ],
         },
         {
             "type": "actions",
@@ -595,16 +617,6 @@ def _approval_blocks(summary_text: str, preview_id: str) -> list:
                     "text": {"type": "plain_text", "text": "Approve", "emoji": True},
                     "style": "primary",
                     "action_id": ACTION_APPROVE,
-                    "value": preview_id,
-                },
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Adjust & Approve",
-                        "emoji": True,
-                    },
-                    "action_id": ACTION_ADJUST,
                     "value": preview_id,
                 },
                 {

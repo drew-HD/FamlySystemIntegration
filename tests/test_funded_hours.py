@@ -170,7 +170,7 @@ class ClampTests(FundedTestCase):
         text = self.last_text()
         self.assertNotIn("Funding shortfall", text)
         self.assertIn("Funding set to scheduled hours: 27.5h (entitlement 33h)", text)
-        self.assertIn("No warnings returned", text)
+        self.assertIn("*Warnings*\n• None.", text)
 
     def test_the_note_text(self):
         self.preview()
@@ -572,7 +572,7 @@ class ClampThenRoundTests(FundedTestCase):
 
         text = self.last_text()
         self.assertIn("Funding set to scheduled hours: 27.5h (entitlement 33h)", text)
-        self.assertIn("Rounded: 269.03 -> 270.00", text)
+        self.assertIn("• Monthly estimate: 269.03\n• Rounded: 270.00", text)
 
     def test_a_discarded_clamp_still_lets_the_rounding_run_on_the_original_body(self):
         self.famly.amount_follows_request = True
@@ -613,7 +613,7 @@ class TimelineTests(FundedTestCase):
 
         text = self.last_text()
         self.assertIn("Funding set to scheduled hours: 16.67h (entitlement 24.5h)", text)
-        self.assertEqual(self.heading(), "*Plan 2 of 3 (funded, 2026-11-01 to 2026-12-31)*")
+        self.assertEqual(self.heading(), "*Plan 2 of 3 (funded, 01/11/2026 to 31/12/2026)*")
 
     def test_the_clamp_does_not_touch_the_stored_chain_payload_or_the_rules(self):
         before = self.funding_file.read_bytes()

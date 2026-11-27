@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -97,7 +98,8 @@ class QueueTestCase(harness.ChainTestCase):
             "os.environ",
             {
                 "QUEUE_MODE": "auto",
-                "QUEUE_ALLOWED_INSTITUTIONS": harness.INSTITUTION,
+                # Most tests here are about the unattended path; AutoCommitSwitchTests covers the default (off).
+                "QUEUE_AUTO_COMMIT": "on",
                 "QUEUE_MAX_COMMITS_PER_DAY": "20",
                 "QUEUE_MAX_MONTHLY": "5000",
                 "AUTO_ROUND_DEFAULT": "",
@@ -478,17 +480,27 @@ class CleanChainTests(QueueTestCase):
         self.queue()
         worker.run_once()
 
-        digest = next(n for n in self.notices if "Queue digest" in n)
-        self.assertIn("1 job(s) finished", digest)
-        self.assertIn("plan `plan-3`", digest)
+        digest = next(n for n in self.notices if "Plan creation summary" in n)
+        lines = digest.splitlines()
+        self.assertEqual(lines[0], ":white_check_mark: *Plan creation summary*")
+        self.assertEqual(len(lines), 4)                                   # one line per plan created
+        self.assertTrue(lines[1].startswith("• Child plan 1 of 3 created in Famly. "))
+        self.assertIn("plan 2 of 3 created in Famly. ", lines[2])
+        self.assertIn("funded days a week", lines[2])                     # plan 2 is the funded one
+        self.assertTrue(lines[3].endswith("from 01/01/2027 to 31/07/2027."))
+        for hidden in (CHILD, "plan-3", self.job_id_of(digest)):
+            self.assertNotIn(hidden, digest)                              # no child, plan or job ids
         self.assertNotIn("DRY RUN", digest)
+
+    def job_id_of(self, _text):
+        return jobs.list_jobs(jobs.STATUS_DONE)[0].job_id
 
     def test_a_job_is_digested_once(self):
         self.queue()
         self.run_all()
         self.run_all()
 
-        self.assertEqual(len([n for n in self.notices if "Queue digest" in n]), 1)
+        self.assertEqual(len([n for n in self.notices if "Plan creation summary" in n]), 1)
 
     def test_digests_wait_thirty_minutes_while_the_queue_is_busy(self):
         other = "00000000-0000-0000-0000-0000000000c2"
@@ -496,12 +508,12 @@ class CleanChainTests(QueueTestCase):
         self.queue(self.body(childId=other))
         with mock.patch.dict("os.environ", {"COMMIT_ALLOWED_CHILD_IDS": f"{CHILD},{other}"}):
             worker.run_once()  # first job done, second still queued: not drained
-            self.assertEqual([n for n in self.notices if "Queue digest" in n], [])
+            self.assertEqual([n for n in self.notices if "Plan creation summary" in n], [])
 
             self.clock += timedelta(minutes=31)
             worker.post_digest(self.clock)
 
-        self.assertEqual(len([n for n in self.notices if "Queue digest" in n]), 1)
+        self.assertEqual(len([n for n in self.notices if "Plan creation summary" in n]), 1)
 
     def test_the_consecutive_failure_count_resets_on_success(self):
         jobs.state_set("consecutive_failures", "2")
@@ -598,8 +610,8 @@ class HeldTests(QueueTestCase):
         self.run_all()
 
         text, preview_id = self.previews_posted[-1]
-        self.assertIn("*Plan 2 of 3 (funded, 2026-11-01 to 2026-12-31)*", text)
-        self.assertIn("Held for approval — warning: Something odd", text)
+        self.assertIn("plan 2 of 3 approval* (from 01/11/2026 to 31/12/2026)", text)
+        self.assertIn("*Warnings*\n• Held for approval: warning: Something odd", text)
         stored = preview_store.get(preview_id)
         self.assertEqual(stored.status, preview_store.STATUS_PENDING)
         self.assertEqual(stored.old_plan_id, "plan-1")
@@ -610,7 +622,7 @@ class HeldTests(QueueTestCase):
             self.queue()
             self.run_all()
 
-        self.assertIn(f"Alex Smith (`{CHILD}`)", self.previews_posted[-1][0])
+        self.assertTrue(self.previews_posted[-1][0].startswith("*Alex Smith plan 2 of 3 approval*"))
 
     def test_approving_it_returns_the_job_to_the_queue_and_the_worker_carries_on(self):
         self.warn_on_funded()
@@ -797,41 +809,72 @@ class CleanCheckTests(QueueTestCase):
 # --------------------------------------------------------------------------- #
 # Safety rails
 # --------------------------------------------------------------------------- #
-class InstitutionLimitTests(QueueTestCase):
-    def test_an_institution_not_on_the_list_is_held(self):
-        with mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": "HDCW"}):
-            data = self.queue()
-            self.run_all()
+class AutoCommitSwitchTests(QueueTestCase):
+    """QUEUE_AUTO_COMMIT off (the default): every plan waits for a Slack Approve. QUEUE_ALLOWED_INSTITUTIONS
+    is gone: the institution no longer decides anything."""
 
+    def off(self):
+        env = mock.patch.dict("os.environ", {"QUEUE_AUTO_COMMIT": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_by_default_every_plan_waits_for_approve_and_nothing_commits(self):
+        self.off()
+        data = self.queue()
+        self.run_all()
         job = self.job(data)
-        self.assertEqual(job.status, jobs.STATUS_HELD)
-        self.assertIn("not in QUEUE_ALLOWED_INSTITUTIONS", job.detail)
+        self.assertEqual((job.status, job.detail), (jobs.STATUS_HELD, worker.AWAITING_APPROVAL))
         self.assertEqual(self.famly.commits, [])
-        self.assertEqual(len(self.previews_posted), 1)  # the human is asked
+        self.assertEqual(len(self.previews_posted), 1)                     # the human is asked
+        self.assertNotIn("Held for approval", self.previews_posted[-1][0])  # not a problem, no reason shown
+        self.assertNotIn("hold_codes", job.segments[0])                     # not flagged as held
 
-    def test_an_empty_list_allows_nothing(self):
-        with mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": ""}):
-            data = self.queue()
+    def test_approve_commits_each_plan_in_turn(self):
+        self.off()
+        data = self.queue()
+        self.run_all()
+        for expected in range(1, len(self.job(data).segments) + 1):
+            text = approval.handle_click(slack.ACTION_APPROVE, self.job(data).preview_id, "drew")
+            self.assertIn("committed to Famly", text)
             self.run_all()
-
-        self.assertEqual(self.job(data).status, jobs.STATUS_HELD)
-        self.assertEqual(self.famly.commits, [])
-
-    def test_matching_is_case_insensitive_and_trimmed(self):
-        with mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": " hdcw , hdcity "}):
-            data = self.queue()
-            self.run_all()
-
+            self.assertEqual(len(self.famly.commits), expected)            # one plan per Approve
         self.assertEqual(self.job(data).status, jobs.STATUS_DONE)
 
-    def test_the_list_is_read_afresh_for_every_plan(self):
+    def test_a_waiting_job_is_not_a_problem_anywhere(self):
+        self.off()
+        data = self.queue()
+        self.run_all()
+        job = self.job(data)
+        self.assertEqual(jobs.held_codes(job), [jobs.AWAITING_APPROVAL_CODE])
+        self.assertEqual([r["reasonCode"] for r in worker.held_list()["held"]], [jobs.AWAITING_APPROVAL_CODE])
+        with mock.patch.object(queue_web.status_sync, "held_async") as flagged:
+            body = {}
+            queue_web._reflag_held(body, job, None)                         # the deal's webhook sent again
+        flagged.assert_not_called()                                         # no needs_attention, no Slack line
+        self.assertEqual(body["reason_code"], jobs.AWAITING_APPROVAL_CODE)
+
+    def test_reject_cancels_and_commits_nothing(self):
+        self.off()
+        data = self.queue()
+        self.run_all()
+        approval.handle_click(slack.ACTION_REJECT, self.job(data).preview_id, "drew")
+        self.assertEqual(self.job(data).status, jobs.STATUS_CANCELLED)
+        self.assertEqual(self.famly.commits, [])
+
+    def test_with_auto_on_any_institution_commits(self):
+        with mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": ""}):   # the old variable is ignored
+            data = self.queue()
+            self.run_all()
+        self.assertEqual(self.job(data).status, jobs.STATUS_DONE)
+
+    def test_the_switch_is_read_afresh_for_every_plan(self):
         data = self.queue()
         real_post = self.famly.post
 
         def post(path, params=None, json_body=None):
             node = real_post(path, params, json_body)
             if (params or {}).get("preview") == "false":
-                os_env = mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": "HDCW"})
+                os_env = mock.patch.dict("os.environ", {"QUEUE_AUTO_COMMIT": "off"})
                 os_env.start()
                 self.addCleanup(os_env.stop)
             return node
@@ -839,7 +882,7 @@ class InstitutionLimitTests(QueueTestCase):
         with mock.patch.object(self.famly, "post", post):
             self.run_all()
 
-        self.assertEqual(self.job(data).status, jobs.STATUS_HELD)
+        self.assertEqual((self.job(data).status, self.job(data).detail), (jobs.STATUS_HELD, worker.AWAITING_APPROVAL))
         self.assertEqual(len(self.famly.commits), 1)  # plan 1 only
 
 
@@ -1270,7 +1313,8 @@ class CommandTests(QueueTestCase):
         self.assertFalse(result["paused"])
         self.assertEqual(result["commitsToday"], 1)
         self.assertEqual(result["jobs"]["queued"], 1)
-        self.assertEqual(result["allowedInstitutions"], [harness.INSTITUTION])
+        self.assertTrue(result["autoCommit"])
+        self.assertNotIn("allowedInstitutions", result)
 
     def test_list_filters_by_status(self):
         self.queue()
@@ -1557,16 +1601,16 @@ class FullyFundedZeroEstimateTests(QueueTestCase):
         self.queue(self.fully_funded_body())
         self.run_all()
 
-        digest = next(n for n in self.notices if "Queue digest" in n)
-        self.assertIn("estimate 0 (fully funded)", digest)
+        digest = next(n for n in self.notices if "Plan creation summary" in n)
+        self.assertIn("£0.00 per month", digest)            # a fully funded plan reads £0.00
 
     def test_the_note_is_absent_for_an_ordinary_plan(self):
         self.famly.preview_hook = None
         self.queue(self.fully_funded_body())
         self.run_all()
 
-        digest = next(n for n in self.notices if "Queue digest" in n)
-        self.assertNotIn("estimate 0 (fully funded)", digest)
+        digest = next(n for n in self.notices if "Plan creation summary" in n)
+        self.assertNotIn("£0.00 per month", digest)
 
 
 class DryDoneKeyTests(QueueTestCase):
@@ -2163,8 +2207,45 @@ class FinalEndDateTests(QueueTestCase):
         self.assertEqual(self.job(data).segments[-1]["to"], "2027-07-31")
         self.assertEqual(
             harness.engine.heading_text(self.job(data).segments, 2),
-            "Plan 3 of 3 (base, 2027-01-01 to 2027-07-31)",
+            "Plan 3 of 3 (base, 01/01/2027 to 31/07/2027)",
         )
+
+
+class PlanCreationSummaryTests(unittest.TestCase):
+    """The plain summary line per created plan (Drew, 2026-11-27) and its figures."""
+
+    def job(self, segments, payload=None):
+        return SimpleNamespace(job_id="job-x", child_id="kid-1", segments=segments, payload=payload or {})
+
+    def test_each_created_plan_is_one_plain_line(self):
+        segments = [
+            {"from": "2026-09-01", "to": "2026-10-31", "funded": False, "plan_id": "p-1",
+             "summary": {"days": 3, "monthly": "813.00"}},
+            {"from": "2026-11-01", "to": None, "funded": True, "plan_id": "p-2",
+             "summary": {"days": 1, "monthly": "0.00"}},
+            {"from": "2027-01-01", "to": "2027-07-31", "funded": False},                  # not created
+        ]
+        with mock.patch.object(worker.child_lookup, "lookup_child_name", lambda _cid: "Alex Smith"):
+            lines = worker._created_lines(self.job(segments))
+        self.assertEqual(lines, [
+            "• Alex Smith plan 1 of 3 created in Famly. 3 days a week, £813.00 per month, "
+            "from 01/09/2026 to 31/10/2026.",
+            "• Alex Smith plan 2 of 3 created in Famly. 1 funded day a week, £0.00 per month, from 01/11/2026 onwards.",
+        ])
+
+    def test_the_monthly_amount_is_the_first_periods_rounded_target_or_its_estimate(self):
+        states = [SimpleNamespace(from_="2026-09-01", monthly_estimate=812.4),
+                  SimpleNamespace(from_="2027-03-01", monthly_estimate=650.0)]
+        prepared = SimpleNamespace(preview=SimpleNamespace(plan=SimpleNamespace(plan_states=states)),
+                                   rounded_periods=[SimpleNamespace(from_="2027-03-01", target=649)])
+        self.assertEqual(worker._monthly_amount(prepared), "812.40")   # the later rounding is not the first's
+        prepared.rounded_periods.append(SimpleNamespace(from_="2026-09-01", target=813))
+        self.assertEqual(worker._monthly_amount(prepared), "813.00")
+        self.assertEqual(worker.booked_days({"monday": "full day", "tuesday": "", "friday": "morning"}), 2)
+
+    def test_an_approval_now_waits_four_days_by_default(self):
+        with mock.patch.dict("os.environ", {"PREVIEW_TTL_HOURS": ""}):
+            self.assertEqual(preview_store.ttl_hours(), 96)
 
 
 if __name__ == "__main__":

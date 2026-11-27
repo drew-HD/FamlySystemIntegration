@@ -10,7 +10,6 @@ from decimal import Decimal
 DRY = "[DRY RUN] "
 
 SITE_NAMES = {"HDWEST": "Westminster", "HDCW": "Canada Water", "HDCITY": "City"}
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def site_name(code) -> str:
@@ -18,9 +17,9 @@ def site_name(code) -> str:
 
 
 def long_date(iso: str) -> str:
-    """2026-11-20 -> '20 Nov 2026' (fixed English month names, whatever the server locale)."""
+    """2026-11-20 -> '20/11/2026': dd/mm/yyyy, the one date format in Slack (Drew, 2026-11-27)."""
     day = date.fromisoformat(str(iso)[:10])
-    return f"{day.day:02d} {_MONTHS[day.month - 1]} {day.year}"
+    return day.strftime("%d/%m/%Y")
 
 
 def percent(fraction) -> str:

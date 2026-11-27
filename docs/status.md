@@ -28,7 +28,7 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
-- QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_ALLOWED_INSTITUTIONS.
+- QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_AUTO_COMMIT on | off (default off: every queued plan waits for Slack Approve; QUEUE_ALLOWED_INSTITUTIONS removed 2026-11-27).
 - ONBOARD_MODE off | dry | live (default off; dev off), ONBOARD_ALLOWED_DEAL_IDS, ONBOARD_TEST_DEAL_IDS, ONBOARD_ENFORCE_ALLOWLIST (only `off` disables).
 - ONBOARD_BILL_PAYER on | off (default off), ONBOARD_BILL_PAYER_DETAIL_SELECTION, ONBOARD_URN_GENERATION on | off (default off; ON in prod and working, confirmed 2026-11-26).
 - ONBOARD_JOIN on | off (default off; registry stage 4), ONBOARD_JOIN_LEAVING_REASON_ID (optional, only if the probe shows Famly needs one). CHILDREN_REGISTRY_PATH must reach the web process and the onboard worker.

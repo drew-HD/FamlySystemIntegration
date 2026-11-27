@@ -403,6 +403,14 @@ def validate_segments(base: dict, segments: list[dict]) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Labels and messages
 # --------------------------------------------------------------------------- #
+def advance_period(base: dict, segment: dict) -> tuple | None:
+    """(advanced_start, advanced_end) of the deal when this plan carries the advance fee, else None: the
+    period the family pays in advance, for the approval message."""
+    if not segment.get("advanced"):
+        return None
+    return (_text(base.get("advanced_start")) or None, _text(base.get("advanced_end")) or None)
+
+
 def heading_text(segments: list[dict], index: int) -> str:
     """e.g. "Plan 2 of 4 (funded, 2026-11-01 to 2026-12-31)"."""
     segment = segments[index]
@@ -411,7 +419,8 @@ def heading_text(segments: list[dict], index: int) -> str:
         kind.append("advanced")
 
     end = segment["to"]
-    span = f"{segment['from']} to {end}" if end else f"{segment['from']} onwards"
+    start = slack.fmt_date(segment["from"])
+    span = f"{start} to {slack.fmt_date(end)}" if end else f"{start} onwards"
     return f"Plan {index + 1} of {len(segments)} ({', '.join(kind)}, {span})"
 
 
@@ -598,7 +607,9 @@ def present_segment(
             replace_old_plan=False,
             chain_id=chain.chain_id,
             chain_index=index,
-            heading=f"*{where}*",
+            position=(index, len(chain.segments)),
+            advance=advance_period(chain.payload, chain.segments[index]),
+            span=(chain.segments[index]["from"], chain.segments[index]["to"]),
         )
     except Exception as exc:
         stop_for_attention(

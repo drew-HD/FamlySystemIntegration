@@ -158,7 +158,7 @@ class HubSpotClient:
 
     def _call(
         self, method: str, path: str, params: dict | None = None,
-        json_body: dict | None = None, attempts: int | None = None,
+        json_body: dict | None = None, attempts: int | None = None, timeout: float | None = None,
     ) -> dict:
         """The one transport: send, retry 429/5xx with backoff, return JSON. `attempts` caps the
         tries (1 = send once, never retried).
@@ -168,15 +168,16 @@ class HubSpotClient:
         headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
 
         limit = attempts or MAX_ATTEMPTS
+        wait = timeout or DEFAULT_TIMEOUT
         for attempt in range(1, limit + 1):
             try:
                 if method == "GET":
                     response = self._session.get(
-                        url, headers=headers, params=params, timeout=DEFAULT_TIMEOUT
+                        url, headers=headers, params=params, timeout=wait
                     )
                 else:
                     response = getattr(self._session, method.lower())(
-                        url, headers=headers, json=json_body, timeout=DEFAULT_TIMEOUT
+                        url, headers=headers, json=json_body, timeout=wait
                     )
             except requests.RequestException as exc:
                 # Type only: the message can echo the URL.
@@ -230,6 +231,14 @@ class HubSpotClient:
         HubSpotError (status 404) if there is no such deal."""
         body = self._get(f"/crm/v3/objects/deals/{deal_id}", {"properties": PLAN_UPLOADED_PROPERTY})
         value = (body.get("properties") or {}).get(PLAN_UPLOADED_PROPERTY)
+        return None if value in (None, "") else str(value)
+
+    def read_deal_property(self, deal_id: str, name: str, *, attempts: int = 1, timeout: float = 5) -> str | None:
+        """One deal property's value (read-only; None when empty), e.g. `full_funded` for the plan message.
+        By default ONE short try (a message must not wait on a slow HubSpot). Raises HubSpotError."""
+        body = self._call("GET", f"/crm/v3/objects/deals/{deal_id}", {"properties": name},
+                          attempts=attempts, timeout=timeout)
+        value = (body.get("properties") or {}).get(name)
         return None if value in (None, "") else str(value)
 
     def read_plan_state(self, deal_id: str) -> tuple[str | None, str | None]:

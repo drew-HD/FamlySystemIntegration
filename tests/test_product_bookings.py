@@ -724,94 +724,14 @@ class ProductSummaryTests(unittest.TestCase):
         )
         return slack.build_summary(plan, [], product_titles=product_titles)
 
-    def test_products_are_listed_by_catalogue_name(self):
-        text = self._summary(
-            {PRODUCT_1: "Meals & Snacks", PRODUCT_2: "Educational Activities"}
-        )
+    def test_products_are_not_shown_in_the_approval_message(self):
+        """Drew, 2026-11-27: the plan approval message lists the sessions only, never the products."""
+        text = self._summary({PRODUCT_1: "Meals & Snacks", PRODUCT_2: "Educational Activities"})
 
-        self.assertIn("*Products* (4)", text)
-        self.assertIn("• Monday — 1× Meals & Snacks", text)
-        self.assertIn("• Monday — 1× Educational Activities", text)
-        self.assertIn("• Wednesday — 1× Meals & Snacks", text)
-
-    def test_an_unresolved_product_falls_back_to_its_uuid(self):
-        text = self._summary({})
-        self.assertIn(f"• Monday — 1× {PRODUCT_1}", text)
-
-    # --- half-day products ------------------------------------------------ #
-    PRODUCT_NAMES = {
-        PRODUCT_1: "Meals & Snacks",
-        PRODUCT_2: "Educational Activities & Extras",
-        HALF_1: "(1/2) Meals & Snacks",
-        HALF_2: "(1/2) Educational Activities & Extras",
-    }
-
-    def _two_and_a_half_day_plan(self):
-        """A plan built from what hubspot_flatten ACTUALLY emits for 2.5."""
-        nested = flatten.flatten_to_nested(flat_payload(addon_quantity="2.5"))
-        part = nested["planParts"][0]
-        return parse_plan(
-            {
-                "childId": CHILD,
-                "from": "2026-09-01",
-                "planParts": [
-                    {
-                        "planPartId": "pp-1",
-                        "sessionBookings": [
-                            {"sessionId": SESSION, "day": b["day"]}
-                            for b in part["sessionBookings"]
-                        ],
-                        "productBookings": part["productBookings"],
-                    }
-                ],
-            }
-        )
-
-    def test_a_two_and_a_half_day_plan_shows_two_full_days_and_one_half_day(self):
-        text = slack.build_summary(
-            self._two_and_a_half_day_plan(), [], product_titles=self.PRODUCT_NAMES
-        )
-
-        self.assertIn("*Products* (6)", text)
-        for day in ("Monday", "Wednesday"):
-            self.assertIn(f"• {day} — 1× Meals & Snacks", text)
-            self.assertIn(f"• {day} — 1× Educational Activities & Extras", text)
-        self.assertIn("• Thursday — 1× (1/2) Meals & Snacks", text)
-        self.assertIn("• Thursday — 1× (1/2) Educational Activities & Extras", text)
-        # The half day carries ONLY the half products -- no full-price lines.
-        self.assertNotIn("• Thursday — 1× Meals & Snacks", text)
-        self.assertNotIn("• Thursday — 1× Educational Activities & Extras", text)
-
-    def test_half_products_show_in_week_order_after_the_full_days(self):
-        text = slack.build_summary(
-            self._two_and_a_half_day_plan(), [], product_titles=self.PRODUCT_NAMES
-        )
-
-        self.assertLess(text.index("• Wednesday — 1× Meals"), text.index("• Thursday — 1× (1/2)"))
-
-    def test_half_products_use_catalogue_names_from_the_real_loader(self):
-        # The names come from reference/catalogue.json's `products` map via
-        # catalogue.load_titles() -- exactly what web.py hands the summary.
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "catalogue.json"
-            path.write_text(
-                json.dumps({"products": self.PRODUCT_NAMES}), encoding="utf-8"
-            )
-            with mock.patch.dict("os.environ", {"FAMLY_CATALOGUE_FILE": str(path)}):
-                _, product_titles = catalogue.load_titles()
-
-        text = slack.build_summary(
-            self._two_and_a_half_day_plan(), [], product_titles=product_titles
-        )
-        self.assertIn("• Thursday — 1× (1/2) Meals & Snacks", text)
-
-    def test_a_half_product_missing_from_the_catalogue_falls_back_to_its_uuid(self):
-        names = {k: v for k, v in self.PRODUCT_NAMES.items() if k not in (HALF_1, HALF_2)}
-        text = slack.build_summary(
-            self._two_and_a_half_day_plan(), [], product_titles=names
-        )
-
-        self.assertIn(f"• Thursday — 1× {HALF_1}", text)
+        self.assertNotIn("Products", text)
+        self.assertNotIn("Meals & Snacks", text)
+        self.assertNotIn(PRODUCT_1, text)
+        self.assertIn("*Sessions* (2)", text)
 
 
 if __name__ == "__main__":

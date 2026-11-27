@@ -545,7 +545,7 @@ cancels the job, with a notice.
 
 | variable | meaning |
 |---|---|
-| `QUEUE_ALLOWED_INSTITUTIONS` | comma-separated codes allowed to commit automatically. **Empty means none**: every plan is held for approval |
+| `QUEUE_AUTO_COMMIT` | `on`: a clean plan commits without a person. **Default off**: every plan is posted to Slack and waits for Approve (`QUEUE_ALLOWED_INSTITUTIONS` was removed on 2026-11-27) |
 | `QUEUE_MAX_COMMITS_PER_DAY` | commit attempts per UTC day (default 20), checked before **every** commit. The rest of the batch waits for the next UTC day, with a Slack notice |
 | `QUEUE_MAX_MONTHLY` | a plan whose estimate is at or above this is held (default 5000) |
 
@@ -606,7 +606,7 @@ sudo systemctl enable --now famly-queue-worker
 journalctl -u famly-queue-worker -f
 ```
 
-Put `QUEUE_MODE`, `QUEUE_ALLOWED_INSTITUTIONS` and the other variables above in the
+Put `QUEUE_MODE`, `QUEUE_AUTO_COMMIT` and the other variables above in the
 same `.env` the web server reads (the worker shares the preview store file, so
 `PREVIEW_STORE_PATH` must match). Leave `QUEUE_MODE` unset (dry run) until the
 digests look right, then set `auto`.

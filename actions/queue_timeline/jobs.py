@@ -381,11 +381,23 @@ def undigested_done() -> list[Job]:
 HELD_NOTICE_WINDOW = timedelta(hours=6)
 
 
+# The `detail` of a job waiting for its plan's Slack Approve (QUEUE_AUTO_COMMIT off): HELD in status, but NOT a
+# problem. Its code is AWAITING_APPROVAL_CODE; nothing flags the deal needs_attention for it.
+AWAITING_APPROVAL_DETAIL = "awaiting approval in Slack"
+AWAITING_APPROVAL_CODE = "awaiting_approval"
+
+
+def is_awaiting_approval(job: Job) -> bool:
+    return job.status == STATUS_HELD and job.detail == AWAITING_APPROVAL_DETAIL
+
+
 def held_codes(job: Job) -> list[str]:
     """The reason codes of a HELD job's held plan: recorded when it was held, else worked out from `detail`
-    (a job held before the codes were recorded). Codes only."""
+    (a job held before the codes were recorded). Codes only. A job waiting for Approve is `awaiting_approval`."""
     if job.status != STATUS_HELD:
         return []
+    if is_awaiting_approval(job):
+        return [AWAITING_APPROVAL_CODE]
     segment = job.segments[job.next_index] if 0 <= job.next_index < len(job.segments) else {}
     recorded = segment.get("hold_codes")
     if isinstance(recorded, list) and recorded:

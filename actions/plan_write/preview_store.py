@@ -19,7 +19,7 @@ No argparse, no Flask: importable and testable anywhere.
 Environment:
     PREVIEW_STORE_PATH  optional path to the SQLite file. Defaults to
                         var/preview_store.sqlite3 under the project root.
-    PREVIEW_TTL_HOURS   optional, default 24. An approval older than this is
+    PREVIEW_TTL_HOURS   optional, default 96 (was 24 until 2026-11-27). An approval older than this is
                         refused: stale pricing must never be committed silently.
 """
 
@@ -38,7 +38,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE_PATH = Path(__file__).resolve().parents[2] / "var" / "preview_store.sqlite3"
-DEFAULT_TTL_HOURS = 24
+DEFAULT_TTL_HOURS = 96   # 4 days: queued plans wait for a person, over a weekend too (2026-11-27)
 
 # Statuses a stored preview moves through.
 STATUS_PENDING = "pending"
