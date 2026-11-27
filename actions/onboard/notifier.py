@@ -51,6 +51,7 @@ def gate_details(plan: dict, context: dict | None, registry=None) -> dict:
             "name": name or None,
             "email": contact.email or "",
             "address": bool(getattr(contact, "has_complete_address", True)),
+            "billPayer": bool(getattr(contact, "is_bill_payer", False)),
             "phone": getattr(contact, "phone_source", "none") != "none",
         }
     try:
@@ -350,6 +351,38 @@ def join_summary_text(deal_id: str, child_id: str, child_name: str | None, codes
     lines = [f"🔗 Nursery deal {deal_ref(deal_id)} joined the ad hoc child *{child_name or 'name not available'}* "
              f"(Famly id {child_id}). The room and the booked ad hoc sessions were not changed."]
     lines += [JOIN_WORDS[c] for c in codes if c in JOIN_WORDS]
+    return "\n".join(lines)
+
+
+def _and(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def done_text(deal_id: str, details: dict, child_created: bool, created_contact_ids, bill_payer_code: str | None,
+              codes) -> str:
+    """The Slack notice when an approved onboarding finished cleanly: one plain sentence with the child's, the
+    new contacts' and the bill payer's NAMES (the Slack exception), an address line per parent whose address was
+    not sent, any other warnings in plain words, and the deal link last. `details` is `gate_details(...)`."""
+    from actions.onboard_dry_run import bill_payers as bp
+    people = details.get("contacts") or {}
+    child = details.get("childName") or NOT_AVAILABLE
+    names = [(people.get(str(cid)) or {}).get("name") or f"contact {cid}" for cid in created_contact_ids]
+    payer = next((p.get("name") for p in people.values() if p.get("billPayer")), None) or "the bill payer"
+    others = details.get("otherChildren") or []
+    line = f"✅ {child} {'created in' if child_created else 'already in'} Famly, with "
+    line += f"contacts {_and(names)}" if names else "no new contacts"
+    if bill_payer_code == bp.ATTACHED and others:
+        line += f" and {payer} matched with bill payer from sibling {_and(others)}"
+    elif bill_payer_code in (bp.CREATED, bp.ATTACHED, bp.PRESENT):
+        line += f" and {payer} as bill payer"
+    lines = [line + "."]
+    for person in people.values():
+        if not person.get("address"):
+            lines.append(f"Please check {person.get('name') or 'a parent'}'s address in HubSpot as it was not "
+                         "added to Famly due to incomplete information.")
+    shown = messages.classify([c for c in codes if c != "address_incomplete"])
+    lines += shown[messages.NOT_DONE] + shown[messages.CHECK]
+    lines.append(f"HubSpot deal: {deal_ref(deal_id)}")
     return "\n".join(lines)
 
 

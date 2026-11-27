@@ -430,16 +430,28 @@ class Phase2Case(unittest.TestCase):
         return "\n".join([t for t, _, _ in self.notify.gates] + self.notify.notices
                          + self.logs + [store.all_rows_as_text()]).casefold()
 
+    NAMED_NOTICES = ("✅ ", "👪", "⚠️ A new bill payer")      # the done, siblings and different-payer notices
+
+    def named_notices(self):
+        return [n for n in self.notify.notices if n.startswith(self.NAMED_NOTICES)]
+
     def private_output(self):
-        """Everything but the Gate A message (which may name the child and parents, with emails)."""
-        return "\n".join(self.notify.notices + self.logs + [store.all_rows_as_text()]).casefold()
+        """Everything but the Slack messages that may name the child and parents (Gate A, the done notice)."""
+        others = [n for n in self.notify.notices if not n.startswith(self.NAMED_NOTICES)]
+        return "\n".join(others + self.logs + [store.all_rows_as_text()]).casefold()
 
     def assert_gate_is_slack_safe(self):
-        """Gate A: names and emails allowed; never a phone number, an address or a date of birth."""
-        gate = "\n".join(t for t, _, _ in self.notify.gates).casefold()
+        """Gate A and the named notices: names (and emails in Gate A) allowed; never a phone number, an address or
+        a date of birth."""
+        gate = "\n".join([t for t, _, _ in self.notify.gates] + self.named_notices()).casefold()
         for value in SLACK_NEVER:
             self.assertNotIn(value, gate, value)
         return gate
+
+    def done_codes(self):
+        """The codes of the last clean finish, from its log line (the done notice carries none)."""
+        line = [l for l in self.logs if l.startswith("onboard: done ")][-1]
+        return line.split("codes=", 1)[1].split(",")
 
 
 # --------------------------------------------------------------------------- #
@@ -923,7 +935,8 @@ class ReadBackTests(Phase2Case):
         self.assertEqual(result["status"], store.DONE)              # not held, not stopped
         self.assertEqual(len(self.famly.contact_creates), 2)
         self.assertIn(messages.lookup("summary_group_mismatch")[1], self.written()["famly_sync_gaps"])
-        self.assertTrue(any("summary_group_mismatch" in n for n in self.notify.notices))
+        self.assertIn("summary_group_mismatch", self.done_codes())
+        self.assertTrue(any(messages.lookup("summary_group_mismatch")[1] in n for n in self.notify.notices))
 
     def test_an_unrecognised_or_unreadable_summary_is_flagged_too(self):
         self.rest.custom = {"weird": {"shape": 1}}
@@ -1517,7 +1530,7 @@ class ExistingChildRuleTests(Phase2Case):
         created = self.famly.contact_creates[0]
         self.assertEqual(created["externalSystemsReferences"], [{"foreignId": "c2", "system": "HUBSPOT"}])
         self.assertEqual(created["records"], [{"key": "RELATION", "value": "Parent"}])
-        self.assertTrue(any("contact_unmatched_on_existing_child" in n for n in self.notify.notices))  # footer
+        self.assertIn("contact_unmatched_on_existing_child", self.done_codes())                    # logged
         blob = self.private_output()
         for value in PII:
             self.assertNotIn(value, blob, value)
@@ -1822,7 +1835,7 @@ class EndDateTests(Phase2Case):
         self.assertEqual(self.run_worker()["status"], store.DONE)
         self.assertEqual(self.hub.deals[DEAL]["end_date"], "2030-01-01")   # theirs, untouched
         self.assertNotIn("end_date", self.written())
-        self.assertIn("end_date_already_set", " ".join(self.notify.notices))
+        self.assertIn("end_date_already_set", self.done_codes())
 
     def test_a_defaulted_end_date_that_cannot_be_written_is_needs_review(self):
         self.hub.fail_props = {"end_date"}

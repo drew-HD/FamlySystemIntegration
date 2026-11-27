@@ -184,9 +184,10 @@ class StaffMessageTests(Phase2Case):
         self.hub.defs["famly_sync_status"] = {"type": "enumeration", "fieldType": "select",
                                               "options": ["something_else"]}
         self.run_through()
-        done = [n for n in self.notify.notices if "Child created in Famly" in n]
+        done = [n for n in self.notify.notices if n.startswith("✅ ")]
         self.assertEqual(len(done), 1)
-        self.assertIn("2 contact(s) created, 0 already present.", done[0])
+        self.assertIn("✅ Zara Quillfeather created in Famly, with contacts Ada Lovelace and Ben Babbage.", done[0])
+        self.assertTrue(done[0].endswith(f"HubSpot deal: <https://app.hubspot.com/contacts/12345/record/0-3/{DEAL}|{DEAL}>"))
         self.assertNotIn("value_not_offered", done[0])
         admin = [n for n in self.notify.notices if n.startswith("Onboarding admin")]
         self.assertEqual(len(admin), 1)
@@ -196,7 +197,7 @@ class StaffMessageTests(Phase2Case):
         self.run_through()
         self.hub.contacts["c2"]["mobilephone"] = "not a number"
         self.hub.contacts["c2"]["phone"] = ""
-        texts = list(self.notify.notices)          # Gate A may name people: assert_gate_is_slack_safe covers it
+        texts = [n for n in self.notify.notices if not n.startswith(self.NAMED_NOTICES)]   # named: checked below
         texts.append(notifier.notice_text(DEAL, "x", self.EXAMPLE))
         texts.append(notifier.admin_notice_text(DEAL, self.EXAMPLE))
         for text in texts:

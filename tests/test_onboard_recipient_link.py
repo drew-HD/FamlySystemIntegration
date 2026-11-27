@@ -48,7 +48,7 @@ class WriteTests(LinkCase):
         payer_id = self.famly.payers[0]["id"]
         self.assertEqual(self.famly.recipient_writes, [{"relationId": contact_id, "billPayerId": payer_id}])
         self.assertIn("billpayerlink:bill_payer_recipient_linked", self.job().outcomes)
-        self.assertTrue(any(messages.recipient_summary() in n for n in self.notify.notices))
+        self.assertIn(messages.recipient_summary(), self.written()["famly_sync_note"])     # the HubSpot note
         blob = self.private_output()
         for value in PII:
             self.assertNotIn(value, blob, value)

@@ -103,9 +103,10 @@ class MatchingTests(ReferenceCase):
                             refs={"fc-1": ([CHILD], "c1")})
         self.enqueue()
         self.run_worker()
-        blob = self.all_output()
+        blob = self.private_output()
         for value in PII:
             self.assertNotIn(value, blob, value)
+        self.assert_gate_is_slack_safe()
 
 
 if __name__ == "__main__":

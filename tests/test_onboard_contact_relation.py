@@ -42,7 +42,7 @@ class AddTests(RelationCase):
         self.assertEqual(self.famly.relation_updates,
                          [("fc-1", [{"contactId": "fc-1", "record": [{"key": "RELATION", "value": "Parent"}]}])])
         self.assertEqual(self.job().outcomes, ["c1:present", "c2:present", "relation:c1:relation_added"])
-        self.assertTrue(any(messages.relation_summary(1) in n for n in self.notify.notices))
+        self.assertIn(messages.relation_summary(1), self.written()["famly_sync_note"])     # the HubSpot note
         self.assertEqual(self.famly.contact_creates, [])
 
     def test_an_existing_relation_of_any_value_is_left_alone(self):

@@ -402,8 +402,8 @@ class CreateTests(BPCase):
         self.assertEqual(payload["children"], [{"childId": CHILD, "share": {"multiplier": 1.0}}])
         self.assertIn("create(billPayers: $input) { billPayerId }", text)         # the id ONLY
         self.assertEqual(self.job().bill_payer_id, "bp-1")
-        self.assertIn("bill_payer_created", self.final_notice())
-        self.assertIn("Bill payer created.", self.final_notice())
+        self.assertIn("bill_payer_created", self.done_codes())
+        self.assertIn("and Ada Lovelace as bill payer.", self.final_notice())
 
     def test_no_sensitive_field_is_ever_in_a_document(self):
         self.run_through()
@@ -420,7 +420,7 @@ class CreateTests(BPCase):
         self.run_through()
         payload = self.famly.bp_writes[0][1]["input"][0]
         self.assertFalse([k for k in payload if "phone" in k.lower()])
-        self.assertIn("phone_unnormalised", self.final_notice() + self.hub.writes.__repr__())
+        self.assertIn("phone_unnormalised", ",".join(self.done_codes()) + self.hub.writes.__repr__())
 
     def test_a_phone_that_the_normaliser_accepts_is_sent_in_the_schemas_shape(self):
         info = {"name": "phoneNumbers", "is_list": True, "object": True, "type_field": True}
@@ -460,7 +460,7 @@ class AttachTests(BPCase):
         self.assertIn("addChildren(shares: $input) { billPayerId childId share { multiplier } }", text)
         self.assertEqual(self.famly.payers[0]["children"], {"older-child": 1.0, CHILD: 1.0})   # older untouched
         self.assertEqual(self.job().bill_payer_id, "the-one")
-        self.assertIn("Child linked to the existing bill payer.", self.final_notice())
+        self.assertIn("Ada Lovelace matched with bill payer from sibling", self.final_notice())
 
     def test_two_matching_payers_flag_ambiguous_and_write_nothing(self):
         self.famly.payers += [payer(self.email, pid="a"), payer(self.email, pid="b")]
@@ -493,10 +493,9 @@ class AttachTests(BPCase):
         self.assertEqual((result["status"], self.codes()), (store.DONE, ""))
         self.assertEqual(self.famly.ops(), [bpw.ADD_CHILDREN_OP])           # the link is still made
         notice = self.final_notice()
-        self.assertIn("differs:name,phone", notice)
-        self.assertIn("To check", notice)
+        self.assertIn("differs:name,phone", ",".join(self.done_codes()))    # field names, logged
         self.assertIn("has different details from HubSpot", notice)        # the plain sentence
-        self.assertIn("bill_payer_differs", notice)                         # and the code
+        self.assertIn("bill_payer_differs", self.done_codes())              # and the code
         self.assertNotIn("needs a person", notice)
         self.assertIn("different details", self.written()["famly_sync_gaps"])
         for value in ("zed zebra", "900999"):
@@ -560,7 +559,7 @@ class SendOnceTests(BPCase):
         self.assertEqual(self.famly.ops(), [bpw.CREATE_OP])
         self.assertEqual(self.sleeps, [10])
         self.assertEqual(result["status"], store.DONE)
-        self.assertIn("bill_payer_created", self.final_notice())
+        self.assertIn("bill_payer_created", self.done_codes())
         self.assertEqual(self.job().bill_payer_id, "bp-1")
 
     def test_a_clean_create_is_read_back_again_while_the_scan_lags(self):
@@ -568,7 +567,7 @@ class SendOnceTests(BPCase):
         result = self.run_through()
         self.assertEqual(result["status"], store.DONE)
         self.assertEqual(self.famly.ops(), [bpw.CREATE_OP])           # one create, never resent
-        self.assertIn("bill_payer_created", self.final_notice())
+        self.assertIn("bill_payer_created", self.done_codes())
 
     def test_a_clean_create_that_never_shows_is_a_readback_mismatch_after_five_reads(self):
         self.famly.lag_scans = 99
@@ -855,7 +854,7 @@ class UnconfirmedPayerGuardTests(BPCase):
         result = self.run_worker()
         self.assertEqual(self.creates(), 1)                  # still no second create
         self.assertEqual(result["status"], store.DONE)
-        self.assertIn("bill_payer_present", self.final_notice())
+        self.assertIn("bill_payer_present", self.done_codes())
 
     def test_a_clean_create_earlier_is_not_blocked(self):
         def reject_ben(payload):

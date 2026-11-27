@@ -493,7 +493,11 @@ def _write_phase(job, deps, plan, context, digest) -> dict:
             deal_id, f"⚠️ {summary} The job needs a person.", codes, bill_payer_footer))
     else:
         store.set_status(job.id, store.DONE, last_error_code=None)
-        deps.notifier.notice(notifier_mod.notice_text(deal_id, f"✅ {summary}", codes, bill_payer_footer))
+        logger.info("onboard: done job=%s deal=%s codes=%s", job.id, deal_id, ",".join(codes + bill_payer_footer))
+        created_ids = [o.split(":", 1)[0] for o in outcomes if o.split(":", 1)[1] == CREATED]
+        deps.notifier.notice(notifier_mod.done_text(
+            deal_id, notifier_mod.gate_details(plan, context, deps.registry), child.created, created_ids,
+            bill_payer.code if bill_payer is not None else None, codes))
     _admin_notice(deps, deal_id, codes)
     _join_summary(deps, job, child, join)
     _bill_payer_choice_notice(job, deps, plan, deal, child, bill_payer)

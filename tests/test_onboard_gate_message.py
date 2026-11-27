@@ -166,6 +166,37 @@ class ChoiceWriteTests(GateCase):
         self.assertIn("may cause issues with billing", notice)
 
 
+class DoneNoticeTests(GateCase):
+    LINK = f"HubSpot deal: <https://app.hubspot.com/contacts/12345/record/0-3/{DEAL}|{DEAL}>"
+
+    def done(self):
+        return next(n for n in self.notify.notices if n.startswith("✅ "))
+
+    def test_a_new_child_with_contacts_and_a_new_bill_payer(self):
+        self.run_through()
+        lines = self.done().splitlines()
+        self.assertEqual(lines[0], "✅ Zara Quillfeather created in Famly, with contacts Ada Lovelace and Ben Babbage "
+                                   "and Ada Lovelace as bill payer.")
+        self.assertIn("Please check Ben Babbage's address in HubSpot as it was not added to Famly due to "
+                      "incomplete information.", lines)
+        self.assertEqual(lines[-1], self.LINK)                       # always last
+        self.assertNotIn("_Codes", self.done())
+
+    def test_a_matched_sibling_bill_payer(self):
+        self.matched()
+        self.run_to_approval()
+        self.click(slack.ACTION_ONBOARD_BP_SAME)
+        self.run_worker()
+        self.assertTrue(self.done().startswith(
+            "✅ Zara Quillfeather created in Famly, with contacts Ada Lovelace and Ben Babbage and Ada Lovelace "
+            "matched with bill payer from sibling Sam Quillfeather."))
+
+    def test_the_done_text_for_an_existing_child_and_no_new_contacts(self):
+        details = {"childName": "Zara Q", "contacts": {"c1": {"name": "Ada L", "address": True, "billPayer": True}}}
+        text = notifier.done_text(DEAL, details, False, [], None, [])
+        self.assertEqual(text.splitlines(), ["✅ Zara Q already in Famly, with no new contacts.", self.LINK])
+
+
 class ForceCreateGuardTests(unittest.TestCase):
     """run_stage(force_create=True) directly, with a scripted scan."""
 

@@ -64,7 +64,7 @@ class LogLineTests(Phase2Case):
         self.assertIn(f"deal={DEAL}", lines[0])
         for chunk in ("98765", "9876543", bad):
             self.assertNotIn(chunk, lines[0])
-        self.assertTrue(any("phone_unnormalised" in n for n in self.notify.notices))   # warning as before
+        self.assertIn("phone_unnormalised", self.done_codes())                          # warning as before
 
 
 class PhoneAuditTests(unittest.TestCase):
