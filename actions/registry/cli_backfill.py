@@ -27,6 +27,7 @@ def handle(args: argparse.Namespace):
     summary, report = backfill.run(hubspot, gql, confirm=args.confirm)
     no_child = summary.pop("_no_child_deals")
     summary.pop("_closed_deals")
+    summary.pop("_child_deals")
     summary.pop("_deal_names")                  # names: never in the printed summary
     if args.deals_out:
         by_stage = {}

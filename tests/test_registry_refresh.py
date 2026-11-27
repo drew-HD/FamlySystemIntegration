@@ -101,6 +101,29 @@ class RefreshTests(Base):
         self.assertIn("deal 104", self.posts[0])
         self.assertNotIn("deal 101", self.posts[0])
 
+    def test_a_child_with_one_closed_and_one_open_deal_stays_listed(self):
+        kids = [child("c1", refs=["301"], urn="SHARED"), child("c2", name="Testchild Beta", urn="SHARED")]
+        deals = [{"id": "301", "dealstage": "left"},                              # old deal, closed (Famly ref)
+                 {"id": "302", "dealstage": "ops", "famly_childid": "c1"}]       # new deal, open (HubSpot only)
+        result = self.run_refresh(kids, deals)
+        self.assertEqual(result["openIssues"], 2)
+        self.assertIn(f"• {TEST_NAME}: deal 301, 302", self.posts[0])
+
+    def test_a_split_message_with_one_failed_part_saves_no_state(self):
+        kids = [child(f"c{i}", name=f"Testchild Number{i:03d}", urn="SHARED") for i in range(150)]
+        self.run_refresh([child("c0")])                                         # baseline: no issues
+        calls = []
+
+        def second_fails(text):
+            calls.append(text)
+            return len(calls) != 2
+        result = refresh.run(FakeHubSpot([]), None, post=second_fails, today=date(2026, 11, 28),
+                             state_file=self.dir / "state.json", reports_dir=self.dir / "reports",
+                             children={c.id: c for c in kids}, links={}, site_codes=SITES)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertTrue(result["postFailed"])
+        self.assertEqual(refresh.load_state(self.dir / "state.json"), set())       # tomorrow they are new again
+
     def test_the_full_list_is_posted_every_night_and_only_new_ones_are_marked(self):
         kids = [child("c1", urn="HD0001CW"), child("c2", name="Testchild Beta", urn="HD0001CW")]
         self.run_refresh(kids)                                         # first night: nothing marked new

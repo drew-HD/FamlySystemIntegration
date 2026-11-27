@@ -122,8 +122,9 @@ def _post(post, text: str) -> bool:
 class Lookup:
     """Names and deals for an issue row, from Famly first, then the registry, then the deal. In memory only."""
 
-    def __init__(self, children: dict, deal_names: dict, closed: set):
+    def __init__(self, children: dict, deal_names: dict, closed: set, child_deals: dict | None = None):
         self.children, self.deal_names, self.closed = children, deal_names, closed
+        self.child_deals = child_deals or {}         # child id -> deal ids tied to it in THIS run's build
         self._registry: dict = {}
 
     def _row(self, child_id: str):
@@ -131,15 +132,21 @@ class Lookup:
             self._registry[child_id] = store.by_child_id(child_id) if child_id else None
         return self._registry[child_id]
 
-    def deals(self, child_id: str, deal_id: str) -> list[str]:
-        if deal_id:
-            return [deal_id]
+    def _child_deals(self, child_id: str) -> list[str]:
+        """Every deal known for the child: the registry row, Famly's HUBSPOT references and this run's build."""
+        if not child_id:
+            return []
         found = [d for d, _ in (self._row(child_id).deals if self._row(child_id) else [])]
         famly = self.children.get(child_id)
-        for system, foreign in (famly.references if famly else []):
-            if system == "HUBSPOT" and foreign and foreign not in found:
-                found.append(foreign)
+        refs = [f for s, f in (famly.references if famly else []) if s == "HUBSPOT" and f]
+        for deal in refs + sorted(self.child_deals.get(child_id, ())):
+            if deal not in found:
+                found.append(deal)
         return found
+
+    def deals(self, child_id: str, deal_id: str) -> list[str]:
+        """The deals shown on the issue's line."""
+        return [deal_id] if deal_id else self._child_deals(child_id)
 
     def name(self, child_id: str, deal_id: str) -> str:
         famly = self.children.get(child_id)
@@ -154,8 +161,8 @@ class Lookup:
         return ""
 
     def is_closed(self, child_id: str, deal_id: str) -> bool:
-        """A deal in a closed stage, or a child all of whose known deals are closed."""
-        deals = self.deals(child_id, deal_id)
+        """True only when the issue's deal AND every deal known for its child are closed: one open deal keeps it."""
+        deals = set(self._child_deals(child_id)) | ({deal_id} if deal_id else set())
         return bool(deals) and all(d in self.closed for d in deals)
 
 
@@ -252,7 +259,7 @@ def run(hubspot, gql, *, dry_run: bool = False, post=None, today: date | None = 
     except Exception as exc:  # noqa: BLE001
         raise fail(f"read_failed_{type(exc).__name__}") from None
     no_child = summary.pop("_no_child_deals")
-    lookup = Lookup(children, summary.pop("_deal_names"), summary.pop("_closed_deals"))
+    lookup = Lookup(children, summary.pop("_deal_names"), summary.pop("_closed_deals"), summary.pop("_child_deals"))
 
     for child_id in sorted(set(before) - set(children)):
         report.add(CHILD_GONE, child_id)
