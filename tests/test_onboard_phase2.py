@@ -1310,7 +1310,7 @@ class WriteBackTests(Phase2Case):
         self.assertEqual(self.hub.writes[-1][1], {"famly_sync_gaps": (
             messages.lookup("no_quote")[1] + "\n" + messages.lookup("phone_missing")[1])})
         # Configuration (admin) items are never written to the deal.
-        self.assertNotIn("HubSpot", self.hub.writes[-1][1]["famly_sync_gaps"])
+        self.assertNotIn(messages.lookup("value_not_offered:x:y")[1], self.hub.writes[-1][1]["famly_sync_gaps"])
 
     def test_there_is_no_write_back_in_dry_mode(self):
         self.mode("dry")
