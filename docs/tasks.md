@@ -2,6 +2,7 @@
 
 | Task | Branch | Status |
 |---|---|---|
+| Deposits into Famly: webhook after plans exist, Slack approve, deposit(s) + invoice, 50/25/25 schedule with later invoices by cron; backfill of historical deposits (paid, no invoices) | deposits | In progress. Planner (amounts, dates, invoice rule) built and tested. Waiting on Drew: the Famly "list deposits" and "create invoice" requests and the paid/unpaid `status` values. |
 | Onboarding summary check read Famly's UTC start timestamp as the day before (false summary_start_mismatch on summer starts, deal 68474985385) | summary-local-dates | Merged and pulled in prod 2026-11-27. Restart famly-onboard-worker. |
 | Plan creation summary (plain line per created plan, no ids) + approval window 96 h | plan-creation-summary | Merged (3ad5934), pulled in prod, services restarted 2026-11-27. |
 | Plan approval message rewrite, dd/mm/yyyy in Slack, queue waits for Slack approval by default (QUEUE_AUTO_COMMIT), QUEUE_ALLOWED_INSTITUTIONS removed | plan-message-approval | Merged (3ad5934), pulled in prod, services restarted 2026-11-27. "All Year Round" fee value shown as is (Drew). Check prod .env: no QUEUE_ALLOWED_INSTITUTIONS, QUEUE_AUTO_COMMIT not on, PREVIEW_TTL_HOURS unset. |
