@@ -4,7 +4,10 @@ import argparse
 
 from actions.pull_roster.runner import _public_client
 from core.client import GraphQLClient
-from core.hubspot import HubSpotClient
+from core.hubspot import HubSpotDealWriter
+
+# The worker and backfill write `famly_deposit_status`, which only the writer class has (it also has every read).
+HubSpotClient = HubSpotDealWriter
 from core.rest_client import RestClient
 
 from . import config, store

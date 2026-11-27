@@ -381,6 +381,13 @@ class ScheduleTests(Base):
         self.assertEqual((len(self.gql.persists()), self.job().status), (3, store.DONE))
 
 
+class CliWiringTests(unittest.TestCase):
+    def test_the_commands_build_a_hub_that_can_write_the_status(self):
+        from actions.deposit import cli
+        for name in ("write_deposit_status", "get_deposit_deal", "stage_names", "search_deals"):
+            self.assertTrue(hasattr(cli.HubSpotClient, name), name)
+
+
 class BackfillTests(Base):
     def setUp(self):
         super().setUp()
