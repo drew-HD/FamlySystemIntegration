@@ -106,7 +106,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.env = mock.patch.dict(os.environ, {"DEPOSIT_STORE_PATH": str(Path(self.tmp.name) / "d.sqlite3"),
-                                                "DEPOSIT_MODE": "live", "DEPOSIT_ALLOWED_DEAL_IDS": "*"})
+                                                "DEPOSIT_MODE": "live"})
         self.env.start()
         self.payer = mock.patch.object(reads, "the_bill_payer", return_value=(BP, None))
         self.payer.start()
@@ -225,17 +225,12 @@ class FirstInstallmentTests(Base):
         self.run_at(2026, 11, 7)
         self.assertEqual((len(self.rest.posts), len(self.gql.persists())), (1, 1))
 
-    def test_dry_mode_and_not_allow_listed_write_nothing(self):
+    def test_dry_mode_writes_nothing(self):
         with mock.patch.dict(os.environ, {"DEPOSIT_MODE": "dry"}):
             self.to_approved()
             self.run_at(2026, 11, 6)
         self.assertEqual((self.job().status, self.rest.posts, self.gql.calls), (store.DRY_DONE, [], []))
-        store._reset_for_tests()
-        with mock.patch.dict(os.environ, {"DEPOSIT_ALLOWED_DEAL_IDS": "999"}):
-            self.to_approved()
-            self.run_at(2026, 11, 6)
-        self.assertEqual((self.job().hold_code, self.rest.posts), ("deal_not_allowed", []))
-        self.assertEqual(self.hub.statuses, [])          # no HubSpot write outside live + allow-listed
+        self.assertEqual(self.hub.statuses, [])          # no HubSpot write outside live mode
 
     def test_a_hold_marks_the_deal_needs_attention(self):
         self.to_approved()
@@ -289,7 +284,7 @@ class FirstInstallmentTests(Base):
         store.resume(self.job().id)
         with mock.patch.dict(os.environ, {"DEPOSIT_MODE": "dry"}):
             self.run_at(2026, 11, 7)
-        self.assertEqual((self.job().status, self.job().hold_code), (store.HELD, "deal_not_allowed"))
+        self.assertEqual((self.job().status, self.job().hold_code), (store.HELD, "not_live"))
 
     def test_amounts_changed_after_approval_hold(self):
         self.to_approved()
@@ -425,11 +420,6 @@ class BackfillTests(Base):
         self.assertEqual([j.deal_id for j in store.jobs()], ["3"])
         self.assertEqual(self.bf(True).get("deposit_exists"), 1)        # a second run never adds again
         self.assertEqual(len(self.rest.posts), 1)
-
-    def test_confirm_writes_only_allow_listed_deals(self):
-        with mock.patch.dict(os.environ, {"DEPOSIT_ALLOWED_DEAL_IDS": "999"}):
-            counts = self.bf(True)
-        self.assertEqual((counts.get("deal_not_allowed"), self.rest.posts), (1, []))
 
     def test_readback_mismatch_stops_the_run(self):
         self.rest.drop_new = True

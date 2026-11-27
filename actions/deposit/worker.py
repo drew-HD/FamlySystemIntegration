@@ -3,7 +3,7 @@
   waiting            gather the facts (deal, child, plans, start, bill payer, deposits). Not there yet: keep
                      waiting (held after DEPOSIT_WAIT_DAYS). A gap: HOLD. Else plan and post the Slack approval.
   approved           re-gather and re-plan with today's date (amounts must match what was approved), then add
-                     installment 1 and send its invoice (live and allow-listed only; dry: nothing is written).
+                     installment 1 and send its invoice (live only; dry: nothing is written).
   scheduled          (live only) each later installment's deposit is added the day before its date; on its date
                      (from 08:00 London) its own invoice is sent unless Famly's regular run covers the child
                      that month (re-checked against the child's start date then).
@@ -55,7 +55,7 @@ class Worker:
         self.status(job, DEPOSIT_STATUS_NEEDS_ATTENTION)
 
     def status(self, job: store.Job, value: str) -> None:
-        """famly_deposit_status on the deal: live and allow-listed only. HubSpot never blocks Famly."""
+        """famly_deposit_status on the deal: live only. HubSpot never blocks Famly."""
         if not config.writes_allowed(job.deal_id):
             return
         try:
@@ -141,8 +141,8 @@ class Worker:
                 store.transition(job.id, store.APPROVED, store.DRY_DONE)
                 self.notifier.notice(messages.done_text(self.name(job), job.deal_id,
                                                         "approved in dry run; nothing was written."))
-            else:                                       # live but not allow-listed, or something already written
-                self.hold(job, "deal_not_allowed")
+            else:                                       # not live, and part of it was already written
+                self.hold(job, "not_live")
             return
         if first is None:
             self.hold(job, "plan_changed")

@@ -28,7 +28,8 @@ HOLD_TEXT = {
     "invoice_outcome_unknown": "An invoice request did not finish. Check Famly before resuming.",
     "invoice_before_deposit": "An invoice was due before its deposit was added.",
     "plan_changed": "The deposit amounts on the deal changed after approval. Cancel and enqueue again.",
-    "deal_not_allowed": "Live mode, but the deal is not in DEPOSIT_ALLOWED_DEAL_IDS.",
+    "not_live": "DEPOSIT_MODE is not live, but part of this deposit was already written. Set it to live and "
+                "resume the job.",
     "waited_too_long": "The child, bill payer or plans did not appear in Famly in time.",
     "slack_post_failed": "The approval message could not be posted to Slack.",
     planner.AMOUNT_MISSING: "The deal has no Total Deposit Amount.",

@@ -4,8 +4,7 @@
         off   the webhook refuses and the worker does nothing.
         dry   the worker reads and plans, posts the Slack approval, and on Approve writes NOTHING.
         live  Approve adds the first deposit and sends its invoice; later installments run on schedule.
-    DEPOSIT_ALLOWED_DEAL_IDS  comma-separated deal ids allowed to write in live mode; `*` = every deal.
-                              Empty = none (live mode then plans but never writes).
+              Every deal may write (no deal allow-list: Drew, 2026-11-27).
     DEPOSIT_INVOICE_DUE_DAYS  days from the invoice date to its due date (default 7).
     DEPOSIT_WAIT_DAYS         how long a job waits for the child, bill payer and plans before it is held
                               (default 14).
@@ -31,14 +30,8 @@ def mode() -> str:
     return MODE_OFF
 
 
-def deal_allowed(deal_id: str) -> bool:
-    raw = os.environ.get("DEPOSIT_ALLOWED_DEAL_IDS", "")
-    ids = {p.strip() for p in raw.split(",") if p.strip()}
-    return "*" in ids or str(deal_id) in ids
-
-
 def writes_allowed(deal_id: str) -> bool:
-    return mode() == MODE_LIVE and deal_allowed(deal_id)
+    return mode() == MODE_LIVE
 
 
 def _int(name: str, default: int, low: int, high: int) -> int:

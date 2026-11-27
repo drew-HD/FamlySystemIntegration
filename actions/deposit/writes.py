@@ -43,7 +43,7 @@ def add_deposit(writer: famly.DepositWriter, rest, job: store.Job, inst: store.I
     if inst.deposit_state != store.D_PENDING:
         return inst.deposit_id or ""
     if writer.writes_allowed is not True:
-        raise Held("deal_not_allowed")
+        raise Held("not_live")
     before = famly.list_deposits(rest, job.institution_id, job.child_id)
     ours = store.all_deposit_ids(job.child_id)
     if any(d.get("depositId") not in ours for d in before) or any(_same(d, inst) for d in before):
@@ -79,7 +79,7 @@ def send_invoice(writer: famly.DepositWriter, gql, job: store.Job, inst: store.I
     if inst.deposit_state != store.D_ADDED:
         raise Held("invoice_before_deposit")
     if writer.writes_allowed is not True:
-        raise Held("deal_not_allowed")
+        raise Held("not_live")
     invoice_date, due = today.isoformat(), (today + timedelta(days=config.invoice_due_days())).isoformat()
     range_from = range_to = following_sunday(today).isoformat()
     preview = famly.preview_invoice(gql, job.bill_payer_id, invoice_date, due, range_from, range_to)

@@ -9,8 +9,7 @@ Per deal (Operations pipeline, from a HubSpot search):
 Skipped with a code (in the CSV): child_missing, preference "50 / 25 / 25" (split_check_by_hand: how much is
 paid so far is not on the deal), every planner amount code, site_unmapped, bill_payer_missing/ambiguous,
 deposit_exists (any deposit already on the child). A read-back that does not show exactly the new paid deposit
-STOPS the run. --confirm also needs DEPOSIT_MODE=live, and only deals in DEPOSIT_ALLOWED_DEAL_IDS (`*` = all)
-are written (others: deal_not_allowed). The CSV (reports/, gitignored) holds deal and child ids,
+STOPS the run. --confirm also needs DEPOSIT_MODE=live. The CSV (reports/, gitignored) holds deal and child ids,
 stage, amount and the outcome; no names.
 """
 
@@ -97,9 +96,6 @@ def run(hub, rest, public, *, confirm: bool, limit: int | None = None, out_path:
             continue
         if not confirm:
             note(deal, child_id, stage, amount, "would_add_paid")
-            continue
-        if not config.deal_allowed(deal["id"]):
-            note(deal, child_id, stage, amount, "deal_not_allowed")
             continue
         if limit is not None and written >= limit:
             note(deal, child_id, stage, amount, "limit_reached")
