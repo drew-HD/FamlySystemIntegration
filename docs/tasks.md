@@ -2,7 +2,7 @@
 
 | Task | Branch | Status |
 |---|---|---|
-| Deposits part 2: worker, webhook, Slack approval, 50/25/25 schedule, backfill | deposit-worker | Built, fakes only. Next: review, Drew merges; HubSpot workflow webhook `deposit_enqueue`; cron `deposit-worker` every 10 min; DEPOSIT_MODE dry first; backfill dry run. |
+| Deposits part 2: worker, webhook, Slack approval, 50/25/25 schedule, backfill | deposit-worker | Built, fakes only, reviewed and approved (2532398). Open: does Famly's 1st-of-month run happen before 08:00 London? Next: Drew merges; HubSpot workflow webhook `deposit_enqueue`; cron `deposit-worker` every 10 min; DEPOSIT_MODE dry first; backfill dry run. |
 | Deposits into Famly: webhook after plans exist, Slack approve, deposit(s) + invoice, 50/25/25 schedule with later invoices by cron; backfill of historical deposits (paid, no invoices) | deposits | Merged (a4ab68d), pulled in prod. Probe passed live 2026-11-27 on the City test child (adds, decimals kept, paid = PAYED_EXTERNALLY); probe deposits deleted by Drew. Invoice Persist step not run. |
 | Onboarding summary check read Famly's UTC start timestamp as the day before (false summary_start_mismatch on summer starts, deal 68474985385) | summary-local-dates | Merged and pulled in prod 2026-11-27. Restart famly-onboard-worker. |
 | Plan creation summary (plain line per created plan, no ids) + approval window 96 h | plan-creation-summary | Merged (3ad5934), pulled in prod, services restarted 2026-11-27. |
