@@ -22,14 +22,20 @@ Famly default when unset.
 """
 
 import logging
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 GROUP_ID_KEYS = ("groupId", "currentGroupId")
 GROUP_OBJECT_KEYS = ("group", "currentGroup")
-START_KEYS = ("startDate", "start_date", "firstDay")
-END_KEYS = ("endDate", "end_date", "lastDay")
+# `localStartDate` / `localEndDate` first: the plain nursery dates. `startDate` / `endDate` are UTC timestamps of
+# London midnight (live, 2026-11-27: startDate 2028-04-30T23:00:00+00:00 beside localStartDate 2028-05-01), so
+# their first ten characters are the day BEFORE for any summer date; `_date_part` converts them to London.
+START_KEYS = ("localStartDate", "startDate", "start_date", "firstDay")
+END_KEYS = ("localEndDate", "endDate", "end_date", "lastDay")
+LOCAL_TZ = "Europe/London"
 
 UNRECOGNISED = "summary_unrecognised"
 UNREADABLE = "summary_unreadable"
@@ -60,8 +66,19 @@ def _first(node: Any, keys) -> Any:
 
 
 def _date_part(value: Any) -> str | None:
+    """`YYYY-MM-DD`. A timestamp with a time zone is the LONDON date of that moment (Famly's UTC timestamps of
+    London midnight); a plain date, or a timestamp without a zone, is its first ten characters."""
     text = str(value or "").strip()
-    return text[:10] if len(text) >= 10 else None
+    if len(text) < 10:
+        return None
+    if len(text) > 10:
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text[:10]
+        if moment.tzinfo is not None:
+            return moment.astimezone(ZoneInfo(LOCAL_TZ)).date().isoformat()
+    return text[:10]
 
 
 def _child_node(summary: Any) -> Any:
