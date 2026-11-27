@@ -15,6 +15,8 @@ import secrets
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from core.hubspot import DEPOSIT_STATUS_ADDED, DEPOSIT_STATUS_NEEDS_ATTENTION
+
 from . import config, famly, messages, planner, reads, store, writes
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,16 @@ class Worker:
         store.hold(job, code)
         logger.info("DEPOSIT HELD job=%s code=%s", job.id, code)
         self.notifier.notice(messages.hold_text(self.name(job), job.deal_id, code))
+        self.status(job, DEPOSIT_STATUS_NEEDS_ATTENTION)
+
+    def status(self, job: store.Job, value: str) -> None:
+        """famly_deposit_status on the deal: live and allow-listed only. HubSpot never blocks Famly."""
+        if not config.writes_allowed(job.deal_id):
+            return
+        try:
+            self.hub.write_deposit_status(job.deal_id, value)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("DEPOSIT status write job=%s failed: %s", job.id, type(exc).__name__)
 
     def writer(self, job: store.Job) -> famly.DepositWriter:
         return famly.DepositWriter(self.rest, self.gql, writes_allowed=config.writes_allowed(job.deal_id))
@@ -166,6 +178,7 @@ class Worker:
         writes.send_invoice(writer, self.gql, job, store.installments(job.id)[0], self.today)
         more = len(store.installments(job.id)) > 1
         store.transition(job.id, store.APPROVED, store.SCHEDULED if more else store.DONE)
+        self.status(job, DEPOSIT_STATUS_ADDED)
         self.notifier.notice(messages.done_text(self.name(job, name_deal), job.deal_id,
                                                 f"{messages.money(first.amount)} added and invoiced."))
 

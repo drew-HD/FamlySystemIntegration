@@ -33,6 +33,10 @@ def deal(**over):
 class FakeHub:
     def __init__(self, d=None):
         self.deals = {DEAL: d or deal()}
+        self.statuses = []
+
+    def write_deposit_status(self, deal_id, value):
+        self.statuses.append((deal_id, value))
 
     def get_deposit_deal(self, deal_id):
         return dict(self.deals[deal_id])
@@ -213,6 +217,10 @@ class FirstInstallmentTests(Base):
         self.assertEqual((body["amount"], body["date"], body["status"]), (1500, "2026-11-06", ""))
         self.assertEqual([c["mode"] for c in self.gql.calls], ["Preview", "Persist"])
         self.assertTrue(self.gql.persists()[0]["notify"])
+        # 6 Nov 2026 is a Friday: the period is Sunday 8 Nov only; due 7 days after the invoice date
+        self.assertEqual([c["range"] for c in self.gql.calls], [{"from": "2026-11-08", "to": "2026-11-08"}] * 2)
+        self.assertEqual(self.gql.persists()[0]["dueDate"], "2026-11-13")
+        self.assertEqual(self.hub.statuses, [(DEAL, "deposit_added")])
         self.assertEqual(self.job().status, store.DONE)
         self.run_at(2026, 11, 7)
         self.assertEqual((len(self.rest.posts), len(self.gql.persists())), (1, 1))
@@ -227,6 +235,20 @@ class FirstInstallmentTests(Base):
             self.to_approved()
             self.run_at(2026, 11, 6)
         self.assertEqual((self.job().hold_code, self.rest.posts), ("deal_not_allowed", []))
+        self.assertEqual(self.hub.statuses, [])          # no HubSpot write outside live + allow-listed
+
+    def test_a_hold_marks_the_deal_needs_attention(self):
+        self.to_approved()
+        self.preview_matches("1890.00")
+        self.run_at(2026, 11, 6)
+        self.assertEqual(self.hub.statuses, [(DEAL, "needs_attention")])
+
+    def test_a_failed_status_write_does_not_block_famly(self):
+        self.hub.write_deposit_status = mock.Mock(side_effect=RuntimeError("hubspot down"))
+        self.to_approved()
+        self.preview_matches("1500.00")
+        self.run_at(2026, 11, 6)
+        self.assertEqual((self.job().status, len(self.gql.persists())), (store.DONE, 1))
 
     def test_preview_mismatch_holds_without_persisting_and_resume_never_readds(self):
         self.to_approved()
@@ -391,6 +413,8 @@ class BackfillTests(Base):
         counts = self.bf(True)
         self.assertEqual(counts["added_paid"], 1)
         self.assertEqual(self.rest.posts[0][1]["deposits"][0]["status"], "PAID_EXTERN")
+        self.assertEqual(self.rest.posts[0][1]["deposits"][0]["date"], "2026-11-27")
+        self.assertEqual(self.hub.statuses, [("1", "deposit_added")])
         self.assertEqual([j.deal_id for j in store.jobs()], ["3"])
         self.assertEqual(self.bf(True).get("deposit_exists"), 1)        # a second run never adds again
         self.assertEqual(len(self.rest.posts), 1)

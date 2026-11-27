@@ -83,5 +83,13 @@ class InvoiceRuleTests(unittest.TestCase):
                 self.assertEqual([i.invoice_on for i in p.plan(split_deal(), run, start)], expected)
 
 
+class InvoicePeriodTests(unittest.TestCase):
+    def test_the_period_is_the_following_sunday(self):
+        from actions.deposit.writes import following_sunday
+        self.assertEqual(following_sunday(date(2026, 11, 27)), date(2026, 11, 29))   # Friday
+        self.assertEqual(following_sunday(date(2026, 11, 29)), date(2026, 12, 6))    # Sunday -> next one
+        self.assertEqual(following_sunday(date(2026, 12, 28)), date(2027, 1, 3))     # over the year end
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,7 @@ from typing import Callable
 
 from actions.onboard_dry_run import bill_payers as payer_scan
 from actions.onboard_dry_run import derive
-from core.hubspot import DEPOSIT_DEAL_PROPERTIES
+from core.hubspot import DEPOSIT_DEAL_PROPERTIES, DEPOSIT_STATUS_ADDED
 
 from . import config, famly, planner, store
 
@@ -115,6 +115,10 @@ def run(hub, rest, public, *, confirm: bool, limit: int | None = None, out_path:
             _write_csv(rows, out_path, echo)
             raise Stop(f"read-back mismatch on child {child_id}; run stopped")
         note(deal, child_id, stage, amount, "added_paid")
+        try:                                       # HubSpot never blocks Famly
+            hub.write_deposit_status(deal["id"], DEPOSIT_STATUS_ADDED)
+        except Exception:  # noqa: BLE001
+            counts["status_write_failed"] = counts.get("status_write_failed", 0) + 1
 
     _write_csv(rows, out_path, echo)
     echo(f"deposit-backfill ({'CONFIRM' if confirm else 'dry run'}): {len(deals)} deal(s); {counts}")

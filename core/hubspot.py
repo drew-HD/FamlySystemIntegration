@@ -404,6 +404,11 @@ PLAN_NOTE_PROPERTY = "famly_plan_note"
 PLAN_STATUS_CREATED = "plan_created"
 PLAN_STATUS_NEEDS_ATTENTION = "needs_attention"
 PLAN_STATUS_VALUES = (PLAN_STATUS_CREATED, PLAN_STATUS_NEEDS_ATTENTION)
+# The deposit pipeline's status (actions/deposit), a dropdown created by Drew 2026-11-27.
+DEPOSIT_STATUS_PROPERTY = "famly_deposit_status"
+DEPOSIT_STATUS_ADDED = "deposit_added"
+DEPOSIT_STATUS_NEEDS_ATTENTION = "needs_attention"
+DEPOSIT_STATUS_VALUES = (DEPOSIT_STATUS_ADDED, DEPOSIT_STATUS_NEEDS_ATTENTION)
 # A note is a code: lowercase letters, digits and _ : . , - + only (never a name, an email or free text), or
 # empty. The `+` is for a "+N" count of further sub-codes (`a,b,c,+2`).
 PLAN_NOTE_PATTERN = re.compile(r"^[a-z0-9_:.,+-]{0,100}$")
@@ -469,6 +474,18 @@ class HubSpotDealWriter(HubSpotClient):
             raise ValueError("famly_plan_status must be plan_created or needs_attention")
         self._call("PATCH", f"/crm/v3/objects/deals/{deal_id}",
                    json_body={"properties": {PLAN_STATUS_PROPERTY: value}}, attempts=1)
+
+    def write_deposit_status(self, deal_id: str, value: str) -> None:
+        """PATCH `famly_deposit_status` to `deposit_added` or `needs_attention`: ONE request, never retried.
+
+        Raises:
+            ValueError: any other value (nothing sent).
+            HubSpotError: the request failed.
+        """
+        if value not in DEPOSIT_STATUS_VALUES:
+            raise ValueError("famly_deposit_status must be deposit_added or needs_attention")
+        self._call("PATCH", f"/crm/v3/objects/deals/{deal_id}",
+                   json_body={"properties": {DEPOSIT_STATUS_PROPERTY: value}}, attempts=1)
 
     def write_followup(self, deal_id: str, value: str) -> None:
         """PATCH `famly_followup` to one of FOLLOWUP_VALUES: ONE request, never retried.

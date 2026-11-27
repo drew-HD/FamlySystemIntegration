@@ -10,7 +10,7 @@ add_deposit(job, inst):
 
 send_invoice(job, inst, today):
   1. the deposit must be `added` and the invoice `due`.
-  2. PREVIEW (nothing saved): exactly one invoice whose total equals the installment amount, else
+  2. PREVIEW (nothing saved), period = the following Sunday only (from = to): exactly one invoice whose total equals the installment amount, else
      HOLD invoice_preview_mismatch (e.g. a sibling's or the child's fees would be on it).
   3. due -> sending (atomic), PERSIST with notify on -> sent; any failure -> HOLD invoice_outcome_unknown.
 """
@@ -65,10 +65,10 @@ def add_deposit(writer: famly.DepositWriter, rest, job: store.Job, inst: store.I
     return deposit_id
 
 
-def _month(d: date) -> tuple[str, str]:
-    first = d.replace(day=1)
-    nxt = date(d.year + (d.month == 12), d.month % 12 + 1, 1)
-    return first.isoformat(), (nxt - timedelta(days=1)).isoformat()
+def following_sunday(d: date) -> date:
+    """The Sunday after `d` (a Sunday gives the next one). An invoice whose period is that one day carries no
+    session fees, so it should hold only the deposit (Drew, 2026-11-27); the preview total still checks it."""
+    return d + timedelta(days=(6 - d.weekday()) or 7)
 
 
 def send_invoice(writer: famly.DepositWriter, gql, job: store.Job, inst: store.Inst, today: date) -> str:
@@ -81,7 +81,7 @@ def send_invoice(writer: famly.DepositWriter, gql, job: store.Job, inst: store.I
     if writer.writes_allowed is not True:
         raise Held("deal_not_allowed")
     invoice_date, due = today.isoformat(), (today + timedelta(days=config.invoice_due_days())).isoformat()
-    range_from, range_to = _month(today)
+    range_from = range_to = following_sunday(today).isoformat()
     preview = famly.preview_invoice(gql, job.bill_payer_id, invoice_date, due, range_from, range_to)
     try:
         total_ok = len(preview) == 1 and preview[0]["ok"] and Decimal(str(preview[0]["total"])) == inst.amount
