@@ -596,6 +596,7 @@ def _do_segment(job: jobs.Job) -> bool:
     if prepared.status != 200:
         fail(job.job_id, f"{_where(job, index)} {reasons[0]}")
         return False
+    _record_summary(job, index, prepared)
     if reasons:
         hold(job, index, prepared, reasons)
         return False
@@ -735,6 +736,55 @@ def _priced_at_zero(prepared) -> bool:
     return all(rounding.to_decimal(s.monthly_estimate) == 0 for s in states)
 
 
+def booked_days(payload: dict | None) -> int:
+    """The weekdays the deal books (a non-empty monday..friday slot)."""
+    payload = payload or {}
+    return sum(1 for key, _day in hubspot_flatten._DAYS if str(payload.get(key) or "").strip())
+
+
+def _monthly_amount(prepared) -> str | None:
+    """The plan's monthly amount for the summary: its FIRST pricing period's rounded target, or that period's
+    estimate when rounding did not need to change it. None when it cannot be read."""
+    states = getattr(prepared.preview.plan, "plan_states", None) or []
+    if not states:
+        return None
+    first = states[0]
+    start = str(getattr(first, "from_", None) or "")[:10]
+    match = [p for p in prepared.rounded_periods or [] if str(p.from_ or "")[:10] == start]
+    value = match[0].target if len(match) == 1 else rounding.to_decimal(first.monthly_estimate)
+    return None if value is None else f"{Decimal(str(value)):,.2f}"
+
+
+def _record_summary(job: jobs.Job, index: int, prepared) -> None:
+    """The figures the plan creation summary shows, kept on the segment (figures only). Never raises."""
+    try:
+        jobs.record_segment(job.job_id, index, summary={
+            "days": booked_days(job.payload), "monthly": _monthly_amount(prepared)})
+    except Exception:  # noqa: BLE001 - the summary is a nicety; it never changes the plan
+        logger.warning("QUEUE summary figures not recorded job_id=%s index=%d", job.job_id, index)
+
+
+def _created_lines(job: jobs.Job) -> list[str]:
+    """One plain line per plan the job created (Drew, 2026-11-27): no child id, job id or plan id."""
+    name = child_lookup.lookup_child_name(job.child_id) or "Child"
+    total = len(job.segments)
+    lines = []
+    for index, segment in enumerate(job.segments):
+        if not segment.get("plan_id"):
+            continue
+        summary = segment.get("summary") or {}
+        days = summary.get("days")
+        funded = "funded " if segment.get("funded") else ""
+        unit = "day" if days == 1 else "days"
+        days_text = f"unknown {funded}days a week" if days is None else f"{days} {funded}{unit} a week"
+        monthly = summary.get("monthly")
+        start = slack.fmt_date(segment.get("from")) or "unknown"
+        span = f"from {start} to {slack.fmt_date(segment['to'])}" if segment.get("to") else f"from {start} onwards"
+        lines.append(f"• {name} plan {index + 1} of {total} created in Famly. {days_text}, "
+                     f"{'£' + monthly if monthly else 'unknown amount'} per month, {span}.")
+    return lines
+
+
 def _digest_lines(job: jobs.Job) -> list[str]:
     label = " (dry run)" if job.status == jobs.STATUS_DRY_DONE else ""
     lines = [f"• {_child_line(job.child_id)} — job `{job.job_id}`{label}"]
@@ -769,18 +819,22 @@ def post_digest(now: datetime | None = None, *, drained: bool = False) -> bool:
 
     # Report what the jobs themselves were, not just the mode now: a digest can
     # carry dry runs and real ones together after the mode was switched over.
-    dry_count = sum(1 for j in pending if j.status == jobs.STATUS_DRY_DONE)
-    heading = (
-        f":white_check_mark: *Queue digest* ({mode()}) — {len(pending)} job(s) finished"
-        + (
-            f" ({dry_count} DRY RUN: nothing was committed)"
-            if dry_count
-            else ""
-        )
-    )
-    lines = [heading]
-    for job in pending:
-        lines += _digest_lines(job)
+    # Finished real jobs: the plain plan creation summary. Dry runs keep their own digest lines.
+    real = [j for j in pending if j.status != jobs.STATUS_DRY_DONE]
+    dry = [j for j in pending if j.status == jobs.STATUS_DRY_DONE]
+    lines = []
+    created = [line for job in real for line in _created_lines(job)]
+    if created:
+        lines += [":white_check_mark: *Plan creation summary*"] + created
+    if dry:
+        lines.append(f":white_check_mark: *Queue digest* ({mode()}) — {len(dry)} job(s) finished "
+                     f"({len(dry)} DRY RUN: nothing was committed)")
+        for job in dry:
+            lines += _digest_lines(job)
+    if not lines:                       # finished jobs that created nothing: nothing to say
+        jobs.mark_digested([j.job_id for j in pending])
+        jobs.state_set("last_digest_at", now.isoformat())
+        return False
     if slack.post_notice("\n".join(lines)):
         jobs.mark_digested([j.job_id for j in pending])
         jobs.state_set("last_digest_at", now.isoformat())

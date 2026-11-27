@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -479,17 +480,27 @@ class CleanChainTests(QueueTestCase):
         self.queue()
         worker.run_once()
 
-        digest = next(n for n in self.notices if "Queue digest" in n)
-        self.assertIn("1 job(s) finished", digest)
-        self.assertIn("plan `plan-3`", digest)
+        digest = next(n for n in self.notices if "Plan creation summary" in n)
+        lines = digest.splitlines()
+        self.assertEqual(lines[0], ":white_check_mark: *Plan creation summary*")
+        self.assertEqual(len(lines), 4)                                   # one line per plan created
+        self.assertTrue(lines[1].startswith("• Child plan 1 of 3 created in Famly. "))
+        self.assertIn("plan 2 of 3 created in Famly. ", lines[2])
+        self.assertIn("funded days a week", lines[2])                     # plan 2 is the funded one
+        self.assertTrue(lines[3].endswith("from 01/01/2027 to 31/07/2027."))
+        for hidden in (CHILD, "plan-3", self.job_id_of(digest)):
+            self.assertNotIn(hidden, digest)                              # no child, plan or job ids
         self.assertNotIn("DRY RUN", digest)
+
+    def job_id_of(self, _text):
+        return jobs.list_jobs(jobs.STATUS_DONE)[0].job_id
 
     def test_a_job_is_digested_once(self):
         self.queue()
         self.run_all()
         self.run_all()
 
-        self.assertEqual(len([n for n in self.notices if "Queue digest" in n]), 1)
+        self.assertEqual(len([n for n in self.notices if "Plan creation summary" in n]), 1)
 
     def test_digests_wait_thirty_minutes_while_the_queue_is_busy(self):
         other = "00000000-0000-0000-0000-0000000000c2"
@@ -497,12 +508,12 @@ class CleanChainTests(QueueTestCase):
         self.queue(self.body(childId=other))
         with mock.patch.dict("os.environ", {"COMMIT_ALLOWED_CHILD_IDS": f"{CHILD},{other}"}):
             worker.run_once()  # first job done, second still queued: not drained
-            self.assertEqual([n for n in self.notices if "Queue digest" in n], [])
+            self.assertEqual([n for n in self.notices if "Plan creation summary" in n], [])
 
             self.clock += timedelta(minutes=31)
             worker.post_digest(self.clock)
 
-        self.assertEqual(len([n for n in self.notices if "Queue digest" in n]), 1)
+        self.assertEqual(len([n for n in self.notices if "Plan creation summary" in n]), 1)
 
     def test_the_consecutive_failure_count_resets_on_success(self):
         jobs.state_set("consecutive_failures", "2")
@@ -1590,16 +1601,16 @@ class FullyFundedZeroEstimateTests(QueueTestCase):
         self.queue(self.fully_funded_body())
         self.run_all()
 
-        digest = next(n for n in self.notices if "Queue digest" in n)
-        self.assertIn("estimate 0 (fully funded)", digest)
+        digest = next(n for n in self.notices if "Plan creation summary" in n)
+        self.assertIn("£0.00 per month", digest)            # a fully funded plan reads £0.00
 
     def test_the_note_is_absent_for_an_ordinary_plan(self):
         self.famly.preview_hook = None
         self.queue(self.fully_funded_body())
         self.run_all()
 
-        digest = next(n for n in self.notices if "Queue digest" in n)
-        self.assertNotIn("estimate 0 (fully funded)", digest)
+        digest = next(n for n in self.notices if "Plan creation summary" in n)
+        self.assertNotIn("£0.00 per month", digest)
 
 
 class DryDoneKeyTests(QueueTestCase):
@@ -2198,6 +2209,43 @@ class FinalEndDateTests(QueueTestCase):
             harness.engine.heading_text(self.job(data).segments, 2),
             "Plan 3 of 3 (base, 01/01/2027 to 31/07/2027)",
         )
+
+
+class PlanCreationSummaryTests(unittest.TestCase):
+    """The plain summary line per created plan (Drew, 2026-11-27) and its figures."""
+
+    def job(self, segments, payload=None):
+        return SimpleNamespace(job_id="job-x", child_id="kid-1", segments=segments, payload=payload or {})
+
+    def test_each_created_plan_is_one_plain_line(self):
+        segments = [
+            {"from": "2026-09-01", "to": "2026-10-31", "funded": False, "plan_id": "p-1",
+             "summary": {"days": 3, "monthly": "813.00"}},
+            {"from": "2026-11-01", "to": None, "funded": True, "plan_id": "p-2",
+             "summary": {"days": 1, "monthly": "0.00"}},
+            {"from": "2027-01-01", "to": "2027-07-31", "funded": False},                  # not created
+        ]
+        with mock.patch.object(worker.child_lookup, "lookup_child_name", lambda _cid: "Alex Smith"):
+            lines = worker._created_lines(self.job(segments))
+        self.assertEqual(lines, [
+            "• Alex Smith plan 1 of 3 created in Famly. 3 days a week, £813.00 per month, "
+            "from 01/09/2026 to 31/10/2026.",
+            "• Alex Smith plan 2 of 3 created in Famly. 1 funded day a week, £0.00 per month, from 01/11/2026 onwards.",
+        ])
+
+    def test_the_monthly_amount_is_the_first_periods_rounded_target_or_its_estimate(self):
+        states = [SimpleNamespace(from_="2026-09-01", monthly_estimate=812.4),
+                  SimpleNamespace(from_="2027-03-01", monthly_estimate=650.0)]
+        prepared = SimpleNamespace(preview=SimpleNamespace(plan=SimpleNamespace(plan_states=states)),
+                                   rounded_periods=[SimpleNamespace(from_="2027-03-01", target=649)])
+        self.assertEqual(worker._monthly_amount(prepared), "812.40")   # the later rounding is not the first's
+        prepared.rounded_periods.append(SimpleNamespace(from_="2026-09-01", target=813))
+        self.assertEqual(worker._monthly_amount(prepared), "813.00")
+        self.assertEqual(worker.booked_days({"monday": "full day", "tuesday": "", "friday": "morning"}), 2)
+
+    def test_an_approval_now_waits_four_days_by_default(self):
+        with mock.patch.dict("os.environ", {"PREVIEW_TTL_HOURS": ""}):
+            self.assertEqual(preview_store.ttl_hours(), 96)
 
 
 if __name__ == "__main__":
