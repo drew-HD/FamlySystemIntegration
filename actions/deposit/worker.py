@@ -146,7 +146,7 @@ class Worker:
                 return
             if (facts.child_id, facts.institution_id, facts.bill_payer_id) != \
                     (job.child_id, job.institution_id, job.bill_payer_id):
-                self.hold(job, "bill_payer_changed")
+                self.hold(job, "famly_ids_changed")
                 return
             if facts.deposits:
                 self.hold(job, "deposit_exists")
@@ -156,7 +156,9 @@ class Worker:
             if len(saved) > 1 and (date.fromisoformat(saved[1].on_date) - self.today).days <= planner.MIN_DAYS_TO_SECOND:
                 self.hold(job, "plan_changed")
                 return
-            store.redate_first(job.id, self.today.isoformat())   # "added on approval": dated today
+            if not store.redate_first(job.id, self.today.isoformat()):   # "added on approval": dated today
+                self.hold(job, "plan_changed")
+                return
         job = store.get(job.id)
         first = store.installments(job.id)[0]
         writer = self.writer(job)

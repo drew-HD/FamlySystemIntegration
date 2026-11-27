@@ -17,6 +17,8 @@ HOLD_TEXT = {
     "bill_payer_ambiguous": "More than one bill payer in Famly bills this child.",
     "bill_payer_scan_failed": "Famly's bill payer list could not be read. Resume the job to try again.",
     "bill_payer_changed": "The child's bill payer in Famly changed since the deposit was approved.",
+    "famly_ids_changed": "The child, site or bill payer in Famly changed since the approval message. Cancel and "
+                         "enqueue again.",
     "deposit_exists": "The child already has a deposit in Famly. Check it by hand.",
     "deposit_list_changed": "The child's deposits in Famly changed (a deposit was added or removed by hand).",
     "deposit_readback_mismatch": "The deposit was sent but Famly's list does not show it as expected. Check by hand.",
