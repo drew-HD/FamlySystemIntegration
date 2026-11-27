@@ -977,6 +977,24 @@ class ReadBackTests(Phase2Case):
         early = {**base, "groupMoves": [{"startDate": "2026-01-01", "groupId": "g"}]}
         self.assertEqual(summary_check.flags(early, **ok), [])
 
+    def test_famlys_utc_timestamps_are_read_as_london_dates(self):
+        """The live shape (2026-11-27): UTC timestamps of London midnight beside the plain local dates."""
+        live = {"child": {"groupId": "g", "isTestChild": False,
+                          "startDate": "2028-04-30T23:00:00+00:00", "endDate": "2032-08-31T22:59:59+00:00",
+                          "localStartDate": "2028-05-01", "localEndDate": "2032-08-31"}}
+        ok = dict(expected_group_id="g", expected_start="2028-05-01", expected_end="2032-08-31", expected_test=False)
+        self.assertEqual(summary_check.flags(live, **ok), [])
+        # Without the local dates, the timestamps alone are converted to London: summer (BST) and winter (GMT).
+        no_local = {"child": {k: v for k, v in live["child"].items() if not k.startswith("local")}}
+        self.assertEqual(summary_check.flags(no_local, **ok), [])
+        winter = {"child": {"groupId": "g", "isTestChild": False, "startDate": "2027-01-04T00:00:00+00:00",
+                            "endDate": "2027-12-31T23:59:59Z"}}
+        self.assertEqual(summary_check.flags(winter, **{**ok, "expected_start": "2027-01-04",
+                                                         "expected_end": "2027-12-31"}), [])
+        # A real difference is still flagged.
+        self.assertEqual(summary_check.flags(live, **{**ok, "expected_start": "2028-04-30"}),
+                         ["summary_start_mismatch"])
+
     def test_a_contact_that_does_not_read_back_does_not_stop_the_others(self):
         calls = {"n": 0}
         real = self.famly.contact_effect
