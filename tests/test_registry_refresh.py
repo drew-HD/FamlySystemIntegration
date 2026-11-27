@@ -26,7 +26,7 @@ class RefreshTests(Base):
         self.posts = []
         return refresh.run(FakeHubSpot(list(deals)), None, dry_run=dry_run, post=self.post, today=day,
                            state_file=self.dir / "state.json", reports_dir=self.dir / "reports",
-                           children={c.id: c for c in children}, links={}, site_codes=SITES)
+                           children={c.id: c for c in children}, site_codes=SITES)
 
     def seed(self, n):
         for i in range(n):
@@ -65,7 +65,7 @@ class RefreshTests(Base):
                 raise TimeoutError()
         with self.assertRaises(refresh.RefreshAborted) as caught:
             refresh.run(Broken([]), None, post=self.post, state_file=self.dir / "s.json",
-                        reports_dir=self.dir, children={"c1": child("c1")}, links={}, site_codes=SITES)
+                        reports_dir=self.dir, children={"c1": child("c1")}, site_codes=SITES)
         self.assertEqual(caught.exception.code, "read_failed_TimeoutError")
         self.assertIsNone(store.by_child_id("c1"))
 
@@ -119,7 +119,7 @@ class RefreshTests(Base):
             return len(calls) != 2
         result = refresh.run(FakeHubSpot([]), None, post=second_fails, today=date(2026, 11, 28),
                              state_file=self.dir / "state.json", reports_dir=self.dir / "reports",
-                             children={c.id: c for c in kids}, links={}, site_codes=SITES)
+                             children={c.id: c for c in kids}, site_codes=SITES)
         self.assertGreaterEqual(len(calls), 2)
         self.assertTrue(result["postFailed"])
         self.assertEqual(refresh.load_state(self.dir / "state.json"), set())       # tomorrow they are new again
