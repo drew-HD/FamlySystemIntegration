@@ -102,9 +102,9 @@ class WorkerTests(ChildOnlyCase):
     def test_gate_a_says_child_only_and_counts_one_write(self):
         self.run_to_approval()
         text = self.notify.gates[-1][0]
-        self.assertIn("child only", text)
-        self.assertIn("Famly writes planned: 1 child", text)
-        self.assertNotIn("contact(s)", text)
+        self.assertIn("Child only: no contacts or bill payer at this stage.", text)
+        self.assertEqual(text.split("*Summary*\n", 1)[1].split("\n\n", 1)[0], "• Child Zara Quillfeather to be created")
+        self.assertNotIn("Contacts to be created", text)
         self.assertNotIn("bill payer", text.lower().replace("no contacts or bill payer", ""))
 
     def test_an_existing_child_is_not_recreated_and_is_linked_without_contacts(self):

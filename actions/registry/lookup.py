@@ -66,6 +66,17 @@ def record_decision(deal_id: str, child_id: str, same: bool) -> None:
     store.set_decision(deal_id, child_id, store.SAME if same else store.DIFFERENT)
 
 
+def record_siblings(child_id: str, other_child_ids, deal_id: str) -> str:
+    """A person confirmed the child and the other children as siblings (Gate A): added | already | failed.
+    Never raises."""
+    try:
+        codes = [store.add_sibling(child_id, other, deal_id) for other in other_child_ids if other != child_id]
+    except Exception as exc:  # noqa: BLE001
+        logger.error("registry: sibling write hit %s", type(exc).__name__)
+        return FAILED
+    return store.ADDED if store.ADDED in codes else store.ALREADY
+
+
 def record_operations_deal(child_id: str, deal_id: str) -> str:
     """Stage 4: an operations deal joined (or found) a child already in the registry: added | already | conflict |
     missing | failed. Never raises."""

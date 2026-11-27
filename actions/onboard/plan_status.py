@@ -11,6 +11,12 @@ from actions.onboard import messages
 _CHILD_VIA = {"external_system_reference": "child_found_reference", "urn": "child_found_urn",
               "famly_childid": "child_found_famly_childid"}
 _CONTACT_FLAG_CODES = {"no_email": "contact_no_email", "ambiguous_on_child": "contact_ambiguous_on_child"}
+CONTACT_FLAG_CODES = _CONTACT_FLAG_CODES
+
+
+def nothing_sentence(plan: dict) -> str:
+    """The sentence for a plan with no Famly write: everything is already there, or something needs a person."""
+    return messages.state("nothing_to_write" if _all_settled(plan) else "no_writes_planned")
 
 
 def planned_writes(plan: dict) -> dict:

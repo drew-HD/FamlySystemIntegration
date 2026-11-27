@@ -187,16 +187,15 @@ class WorkerTests(UrnCase):
     def test_the_approved_urn_is_written_to_hubspot_then_sent_to_famly(self):
         self.run_to_approval()
         text = self.notify.gates[-1][0]
-        self.assertIn(FIRST, text)
-        self.assertIn("NEW URN", text)
-        self.assertIn("Famly writes planned: 1 child", text)
+        self.assertIn(f"Child URN: to be created ({FIRST})", text)
+        self.assertIn("• Child Zara Quillfeather to be created", text)
         self.approve()
         self.assertEqual(self.run_worker()["status"], store.DONE)
         self.assertEqual(self.sent_urn(), FIRST)
         self.assertEqual(self.hub.deals[DEAL]["child_urn"], FIRST)
         order = [e for e in self.events if e == ("hubspot", "child_urn") or e == "child_create"]
         self.assertEqual(order, [("hubspot", "child_urn"), "child_create"])
-        self.assertIn("urn_allocated", self.notify.notices[-1])
+        self.assertIn("urn_allocated", self.done_codes())
 
     def test_the_urn_is_part_of_the_plan_hash(self):
         dry = self.plan()

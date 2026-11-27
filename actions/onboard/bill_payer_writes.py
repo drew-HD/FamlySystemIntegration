@@ -269,10 +269,31 @@ def _single_read(fn):
     return fn(), True
 
 
+def _verified_new(payers, email_key, child_id: str, existing_id: str | None,
+                  expect_id: str | None) -> str | None:
+    """`force_create`: the NEW payer's id if exactly one live payer other than `existing_id` has the email and
+    lists the child at 1.0 (and is `expect_id`, when the response named one); else None."""
+    if payers is None:
+        return None
+    matches = [p for p in payers if _email_in(email_key, p.email) and p.id != existing_id]
+    if len(matches) != 1:
+        return None
+    payer = matches[0]
+    if expect_id and payer.id != expect_id:
+        return None
+    return payer.id if scan_mod.lists_child_at(payer, child_id, MULTIPLIER) else None
+
+
 def run_stage(*, public, scan, contacts, approved: dict, site_id: str, child_id: str,
-              sleep=time.sleep, lookup=_single_read, unresolved: bool = False) -> StageResult:
+              sleep=time.sleep, lookup=_single_read, unresolved: bool = False,
+              force_create: bool = False) -> StageResult:
     """The bill payer stage for one deal. `scan()` returns the site's live payers (a fresh
-    read each call) or None if it failed; `approved` is the plan's `billPayer` section."""
+    read each call) or None if it failed; `approved` is the plan's `billPayer` section.
+
+    `force_create` (Gate A "Different bill payer"): the approved plan matched an existing payer by email, and a
+    person said it is a different person. The fresh decision must still be that same match (else nothing is
+    written); then a NEW payer is created instead of attaching, and the read-back accepts only one payer with
+    the email other than the matched one."""
     approved_decision = scan_mod.Decision(
         approved.get("status"), approved.get("flag"), approved.get("billPayerId"),
         approved.get("matches") or 0)
@@ -284,6 +305,11 @@ def run_stage(*, public, scan, contacts, approved: dict, site_id: str, child_id:
     decision = scan_mod.decide(contacts, payers, child_id)
     if decision.flag == scan_mod.SCAN_FAILED:
         return StageResult(scan_mod.SCAN_FAILED)
+    if force_create and decision.base() != approved_decision.base():
+        # "Different bill payer" was approved against one exact match. Anything else now (the child already on
+        # the old payer, linked elsewhere, a second match) is NOT a success: nothing is written.
+        logger.warning("onboard: bill payer decision changed since a forced create was approved; nothing written")
+        return StageResult(scan_mod.PLAN_CHANGED)
     linkage_only = (decision.bill_payer_id == approved_decision.bill_payer_id
                     and decision.matches == approved_decision.matches
                     and (decision.status == scan_mod.STATUS_PRESENT
@@ -312,7 +338,9 @@ def run_stage(*, public, scan, contacts, approved: dict, site_id: str, child_id:
         logger.error("onboard: bill payer write not configured: %s", exc)
         return StageResult(scan_mod.WRITE_REJECTED)
 
-    creating = decision.status == scan_mod.WOULD_CREATE
+    forced = force_create and decision.status == scan_mod.WOULD_ATTACH
+    existing_id = decision.bill_payer_id if forced else None
+    creating = decision.status == scan_mod.WOULD_CREATE or forced
     warnings: list[str] = []
     if creating:
         try:
@@ -326,8 +354,16 @@ def run_stage(*, public, scan, contacts, approved: dict, site_id: str, child_id:
                                             "addChildren", decision.bill_payer_id)
     success_code = scan_mod.CREATED if creating else scan_mod.ATTACHED
 
-    sent = send_once(public, text, variables, operation, kind, child_id, decision.bill_payer_id)
+    sent = send_once(public, text, variables, operation, kind, child_id,
+                     None if forced else decision.bill_payer_id)
     extra += warnings
+
+    differs = [] if forced else decision.differs       # a new payer: the old payer's differences do not apply
+
+    def verify(payers, expect):
+        if forced:
+            return _verified_new(payers, email_key, child_id, existing_id, expect)
+        return _verified(payers, email_key, child_id, expect)
 
     if sent.clean:
         # Read back and verify, reading again (reads only) while the scan lags.
@@ -335,10 +371,10 @@ def run_stage(*, public, scan, contacts, approved: dict, site_id: str, child_id:
             payers = scan()
             if payers is None:
                 raise RuntimeError("scan_failed")         # could not read, never "not found"
-            same = [p.id for p in payers if _email_in(email_key, p.email)]
+            same = [p.id for p in payers if _email_in(email_key, p.email) and p.id != existing_id]
             if len(same) > 1:
                 return same                               # not lag: stop at once
-            found_id = _verified(payers, email_key, child_id, expect_id)
+            found_id = verify(payers, expect_id or (sent.bill_payer_id if forced else None))
             return [found_id] if found_id else []
         try:
             ids, _readable = lookup(read_back)
@@ -346,16 +382,16 @@ def run_stage(*, public, scan, contacts, approved: dict, site_id: str, child_id:
             ids = []
         found = ids[0] if len(ids) == 1 else None
         if found:
-            return StageResult(success_code, found, extra, decision.differs, sent=True)
+            return StageResult(success_code, found, extra, differs, sent=True)
         return StageResult(scan_mod.READBACK_MISMATCH, sent.bill_payer_id, extra, sent=True)
 
     # Anything else is an UNKNOWN outcome: settle by scanning now, then once more after 10 s.
-    found = _verified(scan(), email_key, child_id, expect_id)
+    found = verify(scan(), expect_id)
     if not found:
         sleep(SETTLE_WAIT_SECONDS)
-        found = _verified(scan(), email_key, child_id, expect_id)
+        found = verify(scan(), expect_id)
     if found:
-        return StageResult(success_code, found, extra, decision.differs, sent=True)
+        return StageResult(success_code, found, extra, differs, sent=True)
     code = scan_mod.WRITE_REJECTED if sent.rejected_hint else scan_mod.OUTCOME_UNKNOWN
     return StageResult(code, None, extra, sent=True)
 

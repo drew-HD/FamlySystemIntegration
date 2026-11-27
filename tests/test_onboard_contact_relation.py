@@ -35,14 +35,14 @@ class AddTests(RelationCase):
         self.enqueue()
         self.assertEqual(self.run_worker()["status"], store.AWAITING_APPROVAL)
         text = self.notify.gates[0][0]
-        self.assertIn("Famly writes planned: 0 child, 0 contact(s), 1 contact relation(s)", text)
+        self.assertIn("*Summary*\n• Contact Ada Lovelace: relation set to Parent\n\n", text)
         self.approve()
         result = self.run_worker()
         self.assertEqual(result["status"], store.DONE)
         self.assertEqual(self.famly.relation_updates,
                          [("fc-1", [{"contactId": "fc-1", "record": [{"key": "RELATION", "value": "Parent"}]}])])
         self.assertEqual(self.job().outcomes, ["c1:present", "c2:present", "relation:c1:relation_added"])
-        self.assertTrue(any(messages.relation_summary(1) in n for n in self.notify.notices))
+        self.assertIn(messages.relation_summary(1), self.written()["famly_sync_note"])     # the HubSpot note
         self.assertEqual(self.famly.contact_creates, [])
 
     def test_an_existing_relation_of_any_value_is_left_alone(self):
@@ -102,9 +102,10 @@ class AddTests(RelationCase):
         self.run_to_approval()
         self.approve()
         self.run_worker()
-        blob = self.all_output()
+        blob = self.private_output()
         for value in PII:
             self.assertNotIn(value, blob, value)
+        self.assert_gate_is_slack_safe()
 
 
 class BlankRelationTests(RelationCase):

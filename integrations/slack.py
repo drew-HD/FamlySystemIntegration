@@ -67,8 +67,13 @@ ACTION_ONBOARD_RETRY = "onboard_retry"
 # Registry stage 4: the same-child question for a nursery deal (value `<job_id>:<famly child id>:<nonce>`).
 ACTION_ONBOARD_SAME_CHILD = "onboard_same_child"
 ACTION_ONBOARD_NEW_CHILD = "onboard_new_child"
+# Gate A when the bill payer's email matches an existing payer: each one approves the plan with a choice.
+ACTION_ONBOARD_BP_SAME = "onboard_bp_same"
+ACTION_ONBOARD_BP_SIBLINGS = "onboard_bp_siblings"
+ACTION_ONBOARD_BP_DIFFERENT = "onboard_bp_different"
+ONBOARD_BP_ACTIONS = (ACTION_ONBOARD_BP_SAME, ACTION_ONBOARD_BP_SIBLINGS, ACTION_ONBOARD_BP_DIFFERENT)
 ONBOARD_ACTIONS = (ACTION_ONBOARD_APPROVE, ACTION_ONBOARD_REJECT, ACTION_ONBOARD_RETRY, ACTION_ONBOARD_SAME_CHILD,
-                   ACTION_ONBOARD_NEW_CHILD)
+                   ACTION_ONBOARD_NEW_CHILD, *ONBOARD_BP_ACTIONS)
 
 # The ad hoc pipeline's own buttons (actions/adhoc/approval.py). Same channel, same signing, same value format.
 ACTION_ADHOC_APPROVE = "adhoc_approve"
@@ -925,6 +930,16 @@ def post_onboard_gate(text: str, value: str) -> str | None:
     """Post the onboarding approval request. Returns a message ref
     (`<channel>:<ts>`) when Slack accepted it, else None. Never raises."""
     return _post_onboard_blocks(text, _onboard_blocks(text, value), "onboarding approval request")
+
+
+def post_onboard_gate_bill_payer(text: str, value: str) -> str | None:
+    """The onboarding approval request when the bill payer's email matches an existing payer: Same bill payer /
+    Same bill payer and siblings / Different bill payer (each approves) and Reject. Never raises."""
+    return _post_onboard_blocks(text, _adhoc_blocks(text, [
+        _button("Same bill payer", ACTION_ONBOARD_BP_SAME, value, "primary"),
+        _button("Same bill payer and siblings", ACTION_ONBOARD_BP_SIBLINGS, value),
+        _button("Different bill payer", ACTION_ONBOARD_BP_DIFFERENT, value),
+        _button("Reject", ACTION_ONBOARD_REJECT, value, "danger")]), "onboarding approval request")
 
 
 def post_onboard_same_child(text: str, value: str) -> str | None:

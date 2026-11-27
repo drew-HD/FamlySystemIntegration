@@ -40,8 +40,7 @@ class WriteTests(LinkCase):
     def test_a_new_payer_and_a_contact_created_in_the_same_job_are_linked_once_with_the_right_ids(self):
         self.run_to_approval()
         text = self.notify.gates[0][0]
-        self.assertIn("1 bill payer contact link(s)", text)
-        self.assertIn(messages.state("bill_payer_recipient_will_add"), text)
+        self.assertIn("• Ada Lovelace linked to the bill payer to receive invoices", text)
         self.approve()
         result = self.run_worker()
         self.assertEqual(result["status"], store.DONE)
@@ -49,10 +48,11 @@ class WriteTests(LinkCase):
         payer_id = self.famly.payers[0]["id"]
         self.assertEqual(self.famly.recipient_writes, [{"relationId": contact_id, "billPayerId": payer_id}])
         self.assertIn("billpayerlink:bill_payer_recipient_linked", self.job().outcomes)
-        self.assertTrue(any(messages.recipient_summary() in n for n in self.notify.notices))
-        blob = self.all_output()
+        self.assertIn(messages.recipient_summary(), self.written()["famly_sync_note"])     # the HubSpot note
+        blob = self.private_output()
         for value in PII:
             self.assertNotIn(value, blob, value)
+        self.assert_gate_is_slack_safe()
 
     def test_an_existing_payer_that_is_attached_is_linked_too(self):
         self.existing_child()
@@ -70,8 +70,8 @@ class WriteTests(LinkCase):
         self.assertEqual(self.plan()["billPayer"]["recipient"], "will_add")
         self.enqueue()
         self.assertEqual(self.run_worker()["status"], store.AWAITING_APPROVAL)
-        self.assertIn("Famly writes planned: 0 child, 0 contact(s), 0 bill payer, 1 bill payer contact link(s)",
-                      self.notify.gates[0][0])
+        self.assertIn("*Summary*\n• Ada Lovelace linked to the bill payer to receive invoices\n\n",
+                      self.notify.gates[0][0])                              # the only write
         self.assertEqual(self.famly.recipient_writes, [])                   # nothing before the click
         self.approve()
         self.assertEqual(self.run_worker()["status"], store.DONE)

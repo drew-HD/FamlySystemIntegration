@@ -137,7 +137,7 @@ _STATIC: dict[str, tuple[str, str]] = {
     "present": (INFO, ""),
     "end_date_already_set": (INFO, ""),
     # ---- warnings: the work went ahead, look at it ------------------------------
-    "no_quote": (CHECK, "No quote is attached to the deal."),
+    "no_quote": (CHECK, "No quote was attached to the HubSpot deal, so it was not uploaded to Famly."),
     "deposit_amount_missing": (CHECK, "No deposit amount is set on the deal."),
     "sales_deal_ambiguous": (CHECK, "More than one Sales deal is linked to this deal, so the quote could not be found."),
     "child_urn_missing": (CHECK, "The deal has no child URN, so the child could only be looked up by deal ID."),

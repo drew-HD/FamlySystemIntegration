@@ -49,6 +49,14 @@ MSG_SAME_FAILED = "⚠️ The answer could not be saved (the children registry).
 
 SAME_CHILD_QUESTION = "registry_same_child_question"
 
+# The bill payer buttons (the email matched an existing payer): each approves the plan and saves the choice.
+CHOICE_SAME, CHOICE_SIBLINGS, CHOICE_DIFFERENT = "same", "siblings", "different"
+BILL_PAYER_CHOICES = {
+    slack.ACTION_ONBOARD_BP_SAME: CHOICE_SAME,
+    slack.ACTION_ONBOARD_BP_SIBLINGS: CHOICE_SIBLINGS,
+    slack.ACTION_ONBOARD_BP_DIFFERENT: CHOICE_DIFFERENT,
+}
+
 
 _RESULT_CODES = {}
 
@@ -102,16 +110,18 @@ def _decide(action_id: str, value: str | None, user: str | None) -> str:
             return MSG_REJECTED
         return MSG_HANDLED
 
-    if action_id == slack.ACTION_ONBOARD_APPROVE:
+    if action_id == slack.ACTION_ONBOARD_APPROVE or action_id in BILL_PAYER_CHOICES:
         if job.status != store.AWAITING_APPROVAL:
             return MSG_HANDLED
         if not job.plan_hash or not prefix or not job.plan_hash.startswith(prefix):
             return MSG_STALE
         if not job.approval_nonce or nonce != job.approval_nonce:
             return MSG_STALE
+        choice = BILL_PAYER_CHOICES.get(action_id)        # None for the plain Approve
         if store.transition(job.id, store.AWAITING_APPROVAL, store.QUEUED,
-                            approved_hash=job.plan_hash, approval_nonce=None):
-            logger.info("ONBOARD APPROVED job=%s deal=%s user=%s", job.id, job.deal_id, user)
+                            approved_hash=job.plan_hash, approval_nonce=None, bill_payer_choice=choice):
+            logger.info("ONBOARD APPROVED job=%s deal=%s user=%s bill_payer_choice=%s",
+                        job.id, job.deal_id, user, choice)
             return MSG_APPROVED
         return MSG_HANDLED
 

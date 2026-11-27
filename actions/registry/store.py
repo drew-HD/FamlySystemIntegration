@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS same_child_decisions (
     created_at     TEXT NOT NULL,
     PRIMARY KEY (deal_id, famly_child_id)
 );
+-- Two children a person confirmed as siblings (Gate A "Same bill payer and siblings"); the pair is stored in id order.
+CREATE TABLE IF NOT EXISTS sibling_links (
+    child_a        TEXT NOT NULL,
+    child_b        TEXT NOT NULL,
+    deal_id        TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    PRIMARY KEY (child_a, child_b)
+);
 """
 
 SAME, DIFFERENT = "same", "different"
@@ -216,6 +224,27 @@ def set_decision(deal_id: str, famly_child_id: str, decision: str) -> None:
             "INSERT INTO same_child_decisions (deal_id, famly_child_id, decision, created_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (deal_id, famly_child_id) DO UPDATE SET decision = excluded.decision, "
             "created_at = excluded.created_at", (deal, child, decision, _now()))
+
+
+def add_sibling(famly_child_id: str, other_child_id: str, deal_id: str) -> str:
+    """Record two children as siblings (the pair in id order, so A-B and B-A are one row): added | already."""
+    a, b = sorted((str(famly_child_id or "").strip(), str(other_child_id or "").strip()))
+    if not a or not b or a == b:
+        raise ValueError("two different child ids are required")
+    with _open() as connection:
+        cursor = connection.execute(
+            "INSERT OR IGNORE INTO sibling_links (child_a, child_b, deal_id, created_at) VALUES (?, ?, ?, ?)",
+            (a, b, str(deal_id), _now()))
+        return ADDED if cursor.rowcount else ALREADY
+
+
+def siblings(famly_child_id: str) -> list[str]:
+    """The child ids recorded as siblings of this child."""
+    key = str(famly_child_id or "").strip()
+    with _open() as connection:
+        rows = connection.execute(
+            "SELECT child_a, child_b FROM sibling_links WHERE child_a = ? OR child_b = ?", (key, key)).fetchall()
+    return sorted(r["child_b"] if r["child_a"] == key else r["child_a"] for r in rows)
 
 
 # --------------------------------------------------------------------------- #

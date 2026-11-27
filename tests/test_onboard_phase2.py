@@ -50,6 +50,8 @@ PII = [
     "07700 900123", "07700900123", "+447700900123", "07700 900456", "2024-01-15",
     "mill lane", "e1 1aa", "zara",
 ]
+# Never in Slack at all, the Gate A message included.
+SLACK_NEVER = ["07700 900123", "07700900123", "+447700900123", "07700 900456", "2024-01-15", "mill lane", "e1 1aa"]
 
 
 # --------------------------------------------------------------------------- #
@@ -428,6 +430,29 @@ class Phase2Case(unittest.TestCase):
         return "\n".join([t for t, _, _ in self.notify.gates] + self.notify.notices
                          + self.logs + [store.all_rows_as_text()]).casefold()
 
+    NAMED_NOTICES = ("✅ ", "👪", "⚠️ A new bill payer")      # the done, siblings and different-payer notices
+
+    def named_notices(self):
+        return [n for n in self.notify.notices if n.startswith(self.NAMED_NOTICES)]
+
+    def private_output(self):
+        """Everything but the Slack messages that may name the child and parents (Gate A, the done notice)."""
+        others = [n for n in self.notify.notices if not n.startswith(self.NAMED_NOTICES)]
+        return "\n".join(others + self.logs + [store.all_rows_as_text()]).casefold()
+
+    def assert_gate_is_slack_safe(self):
+        """Gate A and the named notices: names (and emails in Gate A) allowed; never a phone number, an address or
+        a date of birth."""
+        gate = "\n".join([t for t, _, _ in self.notify.gates] + self.named_notices()).casefold()
+        for value in SLACK_NEVER:
+            self.assertNotIn(value, gate, value)
+        return gate
+
+    def done_codes(self):
+        """The codes of the last clean finish, from its log line (the done notice carries none)."""
+        line = [l for l in self.logs if l.startswith("onboard: done ")][-1]
+        return line.split("codes=", 1)[1].split(",")
+
 
 # --------------------------------------------------------------------------- #
 # Mode and allowlist gates, and the queue
@@ -554,8 +579,9 @@ class GateATests(Phase2Case):
         text, job_id, digest = self.notify.gates[0]
         self.assertEqual((job_id, digest), (job.id, job.plan_hash))
         for part in (DEAL, "https://app.hubspot.com/contacts/12345/record/0-3/" + DEAL,
-                     "HDWEST", "Littlewings", "Start date: present", "Contact c1 (bill payer): will be created.",
-                     "Warnings:"):
+                     "Child: *Zara Quillfeather*", "Site: Westminster", "Littlewings", "Start date: 15 January 2026",
+                     "Child does not exist in Famly and will be created.", "Contacts to be created:\n",
+                     "Ada Lovelace (Ada.L@Example.org)", "• Contact Ada Lovelace to be created", "*Warnings*"):
             self.assertIn(part, text)
         self.assertEqual(job.approval_ref, "C1:1")
 
@@ -909,7 +935,8 @@ class ReadBackTests(Phase2Case):
         self.assertEqual(result["status"], store.DONE)              # not held, not stopped
         self.assertEqual(len(self.famly.contact_creates), 2)
         self.assertIn(messages.lookup("summary_group_mismatch")[1], self.written()["famly_sync_gaps"])
-        self.assertTrue(any("summary_group_mismatch" in n for n in self.notify.notices))
+        self.assertIn("summary_group_mismatch", self.done_codes())
+        self.assertTrue(any(messages.lookup("summary_group_mismatch")[1] in n for n in self.notify.notices))
 
     def test_an_unrecognised_or_unreadable_summary_is_flagged_too(self):
         self.rest.custom = {"weird": {"shape": 1}}
@@ -1128,8 +1155,7 @@ class RerunTests(Phase2Case):
         # The child is the PIPELINE's (job history), so c2 stays would_create.
         self.assertEqual(result["status"], store.AWAITING_APPROVAL)
         self.assertIn("created by an earlier onboarding job", self.notify.gates[-1][0])
-        self.assertIn(messages.state("contact_missing_on_existing_child", n=2, total=2),
-                      self.notify.gates[-1][0])
+        self.assertIn("Contacts to be created:\nBen Babbage (ben.b@example.org)", self.notify.gates[-1][0])
         self.approve()
         self.run_worker()
         self.assertEqual(self.job().status, store.DONE)
@@ -1284,7 +1310,7 @@ class WriteBackTests(Phase2Case):
         self.assertEqual(self.hub.writes[-1][1], {"famly_sync_gaps": (
             messages.lookup("no_quote")[1] + "\n" + messages.lookup("phone_missing")[1])})
         # Configuration (admin) items are never written to the deal.
-        self.assertNotIn("HubSpot", self.hub.writes[-1][1]["famly_sync_gaps"])
+        self.assertNotIn(messages.lookup("value_not_offered:x:y")[1], self.hub.writes[-1][1]["famly_sync_gaps"])
 
     def test_there_is_no_write_back_in_dry_mode(self):
         self.mode("dry")
@@ -1395,20 +1421,23 @@ class MigrationTests(Phase2Case):
 class GuaranteeTests(Phase2Case):
     def test_no_slack_payload_database_row_or_log_line_carries_personal_data(self):
         self.run_through()
-        blob = self.all_output()
+        blob = self.private_output()
         self.assertTrue(self.notify.gates and self.notify.notices and self.logs)
         for value in PII:
             self.assertNotIn(value, blob, value)
-        slack_text = "\n".join([t for t, _, _ in self.notify.gates] + self.notify.notices)
-        self.assertNotIn("@", slack_text)          # no email address of any kind
+        self.assertNotIn("@", "\n".join(self.notify.notices))      # no email address in the other notices
+        gate = self.assert_gate_is_slack_safe()
+        for value in ("zara quillfeather", "ada lovelace (ada.l@example.org)", "ben babbage (ben.b@example.org)"):
+            self.assertIn(value, gate)                              # the approval message names them
 
     def test_error_paths_do_not_leak_response_bodies_either(self):
         body = json.dumps({"errors": [{"message": "bad name Zara Quillfeather ada.l@example.org"}]})
         self.famly.child_effect = mock.Mock(side_effect=GraphQLHTTPError("bad", 400, body))
         self.run_through()
-        blob = self.all_output()
+        blob = self.private_output()
         for value in PII:
             self.assertNotIn(value, blob, value)
+        self.assert_gate_is_slack_safe()
         self.assertEqual(self.job().last_error_code, "child_http_400")
 
     def test_the_jobs_table_has_no_columns_for_personal_data(self):
@@ -1419,7 +1448,8 @@ class GuaranteeTests(Phase2Case):
                                    "child_id", "attempts", "last_error_code", "approval_ref",
                                    "child_create_sent", "outcomes", "claimed_at", "created_at",
                                    "updated_at", "source", "approval_nonce", "reask_count",
-                                   "plan_sections", "bill_payer_id", "file_hash", "new_urn", "reopen"])
+                                   "plan_sections", "bill_payer_id", "file_hash", "new_urn", "reopen",
+                                   "bill_payer_choice"])
 
     def test_the_famly_writers_are_create_only_and_the_fake_would_catch_anything_else(self):
         for path in (famly_writes.CREATE_CHILD_QUERY, famly_writes.CREATE_CONTACT_QUERY):
@@ -1488,10 +1518,10 @@ class ExistingChildRuleTests(Phase2Case):
         self.assertEqual(result["status"], store.AWAITING_APPROVAL)       # no hold, no re-run
         self.assertEqual(len(self.notify.gates), 1)
         text = self.notify.gates[0][0]
-        self.assertIn(messages.state("contact_missing_on_existing_child", n=2, total=2), text)
+        self.assertIn("Contacts to be created:\nBen Babbage (ben.b@example.org)", text)
         self.assertIn(messages.state("child_other_contacts", k=1), text)  # fc-3 matched no deal parent
         self.assertIn(messages.state("child_other_contacts_candidates", ids="fc-3"), text)
-        self.assertIn("Famly writes planned: 0 child, 1 contact(s)", text)
+        self.assertIn("*Summary*\n• Contact Ben Babbage to be created\n\n", text)      # no child write
         self.assertFalse(self.famly.child_creates or self.famly.contact_creates)    # nothing before the click
         self.approve()
         final = self.run_worker()
@@ -1500,10 +1530,11 @@ class ExistingChildRuleTests(Phase2Case):
         created = self.famly.contact_creates[0]
         self.assertEqual(created["externalSystemsReferences"], [{"foreignId": "c2", "system": "HUBSPOT"}])
         self.assertEqual(created["records"], [{"key": "RELATION", "value": "Parent"}])
-        self.assertTrue(any("contact_unmatched_on_existing_child" in n for n in self.notify.notices))  # footer
-        blob = self.all_output()
+        self.assertIn("contact_unmatched_on_existing_child", self.done_codes())                    # logged
+        blob = self.private_output()
         for value in PII:
             self.assertNotIn(value, blob, value)
+        self.assert_gate_is_slack_safe()
 
     def test_the_duplicate_warning_is_absent_when_every_contact_on_the_child_matched(self):
         self.existing_child([("fc-1", "ada.l@example.org")])
@@ -1556,8 +1587,7 @@ class ExistingChildRuleTests(Phase2Case):
         self.assertIn("queued", json.dumps(reply).lower())
         result = self.run_worker()                                       # the fresh job
         self.assertEqual(result["status"], store.AWAITING_APPROVAL)
-        self.assertIn(messages.state("contact_missing_on_existing_child", n=2, total=2),
-                      self.notify.gates[0][0])
+        self.assertIn("Contacts to be created:\nBen Babbage (ben.b@example.org)", self.notify.gates[0][0])
         self.assertNotEqual(self.job().id, old.id)
         self.assertEqual(messages.lookup("contact_unmatched_on_existing_child"), (messages.INFO, ""))
         # An old row or notice carrying the retired code still renders (in the footer).
@@ -1569,7 +1599,7 @@ class ExistingChildRuleTests(Phase2Case):
         result = self.run_worker()
         # c2 is unmatched: would_create on any existing child, so the job asks for approval.
         self.assertEqual(result["status"], store.AWAITING_APPROVAL)
-        self.assertIn("Child: already in Famly (created by this job).", self.notify.gates[0][0])
+        self.assertIn("It was created by this job.", self.notify.gates[0][0])
         self.approve(job)
         final = self.run_worker()
         self.assertEqual(final["status"], store.DONE)
@@ -1585,9 +1615,9 @@ class ExistingChildRuleTests(Phase2Case):
         self.assertFalse(self.famly.child_creates or self.famly.contact_creates)
         self.assertEqual(self.hub.writes, [])
         text = self.notify.gates[0][0]
-        self.assertIn("Famly writes planned: 0 child, 1 contact(s)", text)
-        self.assertIn(messages.state("contact_missing_on_existing_child", n=2, total=2), text)
-        self.assertIn("already present (matched by", text)
+        self.assertIn("*Summary*\n• Contact Ben Babbage to be created\n\n", text)      # no child write
+        self.assertIn("Contacts to be created:\nBen Babbage (ben.b@example.org)", text)
+        self.assertIn("Already in Famly: Ada Lovelace", text)
         # The click alone writes nothing either; the worker does, only afterwards.
         self.approve(job)
         self.assertFalse(self.famly.contact_creates)
@@ -1624,7 +1654,7 @@ class ExistingChildRuleTests(Phase2Case):
         self.enqueue()
         result = self.run_worker()
         self.assertEqual(result["status"], store.AWAITING_APPROVAL)
-        self.assertIn("will create", self.notify.gates[-1][0])
+        self.assertIn("Contacts to be created:\nAda Lovelace", self.notify.gates[-1][0])
 
 
 # --------------------------------------------------------------------------- #
@@ -1668,8 +1698,8 @@ class OriginFromHistoryTests(Phase2Case):
         self.assertEqual(second.outcome, store.CREATED)
         self.assertEqual(self.run_worker()["status"], store.AWAITING_APPROVAL)
         text = self.notify.gates[-1][0]
-        self.assertIn("Child: already in Famly (created by an earlier onboarding job)", text)         # an EARLIER job made it
-        self.assertIn("Famly writes planned: 0 child, 1 contact(s)", text)
+        self.assertIn("It was created by an earlier onboarding job.", text)         # an EARLIER job made it
+        self.assertIn("*Summary*\n• Contact Ben Babbage to be created\n\n", text)
         self.assertFalse(self.famly.child_creates[1:])             # nothing written before approval
         self.assertEqual(len(self.famly.contact_creates), 2)       # c1, and the rejected c2
 
@@ -1746,13 +1776,14 @@ class OriginFromHistoryTests(Phase2Case):
         def text(child, this_job=None):
             return notifier_mod.gate_text({**plan, "child": child}, "h" * 16, "live",
                                           this_job_child_id=this_job)
-        self.assertIn("Child: will be created in Famly.", text({"status": "child_would_create"}))
-        self.assertIn("Child: already in Famly",
-                      text({"status": "child_found", "famlyChildId": "c", "origin": "existing"}))
+        self.assertIn("Child does not exist in Famly and will be created.", text({"status": "child_would_create"}))
+        existing = text({"status": "child_found", "famlyChildId": "c", "origin": "existing"})
+        self.assertIn("Child already exists in Famly: Famly id c. Please check", existing)
+        self.assertNotIn("It was created", existing)
         mine = {"status": "child_found", "famlyChildId": "c", "origin": "created_by_pipeline"}
-        self.assertIn("Child: already in Famly (created by this job).", text(mine, this_job="c"))
-        self.assertIn("Child: already in Famly (created by an earlier onboarding job)", text(mine, this_job="other"))
-        self.assertIn("Child: already in Famly (created by an earlier onboarding job)", text(mine))
+        self.assertIn("It was created by this job.", text(mine, this_job="c"))
+        self.assertIn("It was created by an earlier onboarding job.", text(mine, this_job="other"))
+        self.assertIn("It was created by an earlier onboarding job.", text(mine))
 
 
 # --------------------------------------------------------------------------- #
@@ -1804,7 +1835,7 @@ class EndDateTests(Phase2Case):
         self.assertEqual(self.run_worker()["status"], store.DONE)
         self.assertEqual(self.hub.deals[DEAL]["end_date"], "2030-01-01")   # theirs, untouched
         self.assertNotIn("end_date", self.written())
-        self.assertIn("end_date_already_set", " ".join(self.notify.notices))
+        self.assertIn("end_date_already_set", self.done_codes())
 
     def test_a_defaulted_end_date_that_cannot_be_written_is_needs_review(self):
         self.hub.fail_props = {"end_date"}
@@ -1825,14 +1856,14 @@ class EndDateTests(Phase2Case):
 
     def test_the_gate_message_says_when_the_end_date_was_defaulted(self):
         self.run_to_approval()
-        self.assertIn("End date: defaulted (31 August after the 4th birthday)", self.notify.gates[0][0])
+        self.assertIn("End date: 31 August 2028 (default: 31 August after the 4th birthday)",
+                      self.notify.gates[0][0])
         store._reset_for_tests()
         self.hub.deals[DEAL]["end_date"] = "2027-03-31"
         self.run_to_approval()
-        self.assertIn("End date: present", self.notify.gates[1][0])
-        self.assertNotIn("defaulted", self.notify.gates[1][0])
-        for value in PII + ["2028-08-31", "2027-03-31"]:
-            self.assertNotIn(value, self.notify.gates[0][0] + self.notify.gates[1][0])
+        self.assertIn("End date: 31 March 2027", self.notify.gates[1][0])
+        self.assertNotIn("default", self.notify.gates[1][0])
+        self.assert_gate_is_slack_safe()                  # the real dates, but never the date of birth
 
 
 class ContactOrderAndLookupTests(Phase2Case):

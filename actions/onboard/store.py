@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS onboard_jobs (
     bill_payer_id     TEXT,
     file_hash         TEXT,
     new_urn           INTEGER NOT NULL DEFAULT 0,
-    reopen            INTEGER NOT NULL DEFAULT 0
+    reopen            INTEGER NOT NULL DEFAULT 0,
+    bill_payer_choice TEXT
 );
 -- Child URN allocations (ONBOARD_URN_GENERATION): one per deal for life, one per number per site.
 CREATE TABLE IF NOT EXISTS onboard_urn_allocations (
@@ -123,7 +124,7 @@ CREATE INDEX IF NOT EXISTS onboard_jobs_by_status ON onboard_jobs (status, creat
 # Columns that update() may set.
 _UPDATABLE = {
     "plan_hash", "approved_hash", "child_id", "last_error_code", "approval_ref",
-    "outcomes", "mode", "approval_nonce", "bill_payer_id",
+    "outcomes", "mode", "approval_nonce", "bill_payer_id", "bill_payer_choice",
 }
 
 
@@ -152,6 +153,9 @@ class Job:
     new_urn: bool = False            # `onboard-enqueue --deal-id X --new-urn`: skip the returning-child check, this job only
     file_hash: str | None = None     # source `file`: a hash of the ids file (never its contents)
     reopen: bool = False             # `onboard-enqueue --reopen-done`: queued although the deal had a done job
+    # The Gate A answer when the bill payer's email matched an existing payer: same | siblings | different
+    # (None: the plain Approve). A code only, no personal data.
+    bill_payer_choice: str | None = None
 
 
 def store_path() -> Path:
@@ -190,6 +194,7 @@ _ADDED_COLUMNS = (
     ("file_hash", "TEXT"),
     ("new_urn", "INTEGER NOT NULL DEFAULT 0"),
     ("reopen", "INTEGER NOT NULL DEFAULT 0"),
+    ("bill_payer_choice", "TEXT"),
 )
 
 
@@ -235,6 +240,7 @@ def _to_job(row: sqlite3.Row) -> Job:
         claimed_at=row["claimed_at"], reask_count=row["reask_count"], plan_sections=sections,
         bill_payer_id=row["bill_payer_id"], file_hash=row["file_hash"],
         new_urn=bool(row["new_urn"]), reopen=bool(row["reopen"]),
+        bill_payer_choice=row["bill_payer_choice"],
     )
 
 
