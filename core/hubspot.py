@@ -80,6 +80,11 @@ CHILD_NAME_PROPERTIES = tuple(
 DEAL_PROPERTIES = DEAL_PROPERTIES + tuple(
     p for p in CHILD_NAME_PROPERTIES if p not in DEAL_PROPERTIES
 )
+# The deposit pipeline's read (actions/deposit). Names go to Slack only.
+DEPOSIT_DEAL_PROPERTIES = (
+    "dealstage", "pipeline", "famly_childid", "famly_plan_status", "location_of_interest",
+    "deposit_amount", "deposit_preference", "n1st_deposit_installment_50", "n2nd_and_3rd_deposit_installments",
+) + CHILD_NAME_PROPERTIES
 # The child's whole name as HubSpot often holds it (may include a middle name Famly leaves out). Read for the
 # children registry name match only; never printed or logged.
 CHILD_FULL_NAME_PROPERTY = "child_full_name"
@@ -224,6 +229,13 @@ class HubSpotClient:
             f"/crm/v3/objects/deals/{deal_id}",
             {"properties": ",".join(DEAL_PROPERTIES)},
         )
+        return dict(body.get("properties") or {})
+
+    def get_deposit_deal(self, deal_id: str) -> dict:
+        """READ-ONLY: the deal properties the deposit pipeline needs (DEPOSIT_DEAL_PROPERTIES), flat.
+        Child names are for the Slack message only; never print or log them."""
+        body = self._get(f"/crm/v3/objects/deals/{deal_id}",
+                         {"properties": ",".join(DEPOSIT_DEAL_PROPERTIES)})
         return dict(body.get("properties") or {})
 
     def read_plan_uploaded(self, deal_id: str) -> str | None:
@@ -392,6 +404,11 @@ PLAN_NOTE_PROPERTY = "famly_plan_note"
 PLAN_STATUS_CREATED = "plan_created"
 PLAN_STATUS_NEEDS_ATTENTION = "needs_attention"
 PLAN_STATUS_VALUES = (PLAN_STATUS_CREATED, PLAN_STATUS_NEEDS_ATTENTION)
+# The deposit pipeline's status (actions/deposit), a dropdown created by Drew 2026-11-27.
+DEPOSIT_STATUS_PROPERTY = "famly_deposit_status"
+DEPOSIT_STATUS_ADDED = "deposit_added"
+DEPOSIT_STATUS_NEEDS_ATTENTION = "needs_attention"
+DEPOSIT_STATUS_VALUES = (DEPOSIT_STATUS_ADDED, DEPOSIT_STATUS_NEEDS_ATTENTION)
 # A note is a code: lowercase letters, digits and _ : . , - + only (never a name, an email or free text), or
 # empty. The `+` is for a "+N" count of further sub-codes (`a,b,c,+2`).
 PLAN_NOTE_PATTERN = re.compile(r"^[a-z0-9_:.,+-]{0,100}$")
@@ -457,6 +474,18 @@ class HubSpotDealWriter(HubSpotClient):
             raise ValueError("famly_plan_status must be plan_created or needs_attention")
         self._call("PATCH", f"/crm/v3/objects/deals/{deal_id}",
                    json_body={"properties": {PLAN_STATUS_PROPERTY: value}}, attempts=1)
+
+    def write_deposit_status(self, deal_id: str, value: str) -> None:
+        """PATCH `famly_deposit_status` to `deposit_added` or `needs_attention`: ONE request, never retried.
+
+        Raises:
+            ValueError: any other value (nothing sent).
+            HubSpotError: the request failed.
+        """
+        if value not in DEPOSIT_STATUS_VALUES:
+            raise ValueError("famly_deposit_status must be deposit_added or needs_attention")
+        self._call("PATCH", f"/crm/v3/objects/deals/{deal_id}",
+                   json_body={"properties": {DEPOSIT_STATUS_PROPERTY: value}}, attempts=1)
 
     def write_followup(self, deal_id: str, value: str) -> None:
         """PATCH `famly_followup` to one of FOLLOWUP_VALUES: ONE request, never retried.

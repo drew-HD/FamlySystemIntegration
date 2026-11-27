@@ -84,6 +84,11 @@ ACTION_ADHOC_RETRY = "adhoc_retry"
 ADHOC_ACTIONS = (ACTION_ADHOC_APPROVE, ACTION_ADHOC_REJECT, ACTION_ADHOC_MATCH_YES, ACTION_ADHOC_MATCH_NEW,
                  ACTION_ADHOC_RETRY)
 
+# The deposit pipeline's buttons (actions/deposit/approval.py). Value `<job_id>:<nonce>`.
+ACTION_DEPOSIT_APPROVE = "deposit_approve"
+ACTION_DEPOSIT_REJECT = "deposit_reject"
+DEPOSIT_ACTIONS = (ACTION_DEPOSIT_APPROVE, ACTION_DEPOSIT_REJECT)
+
 # Interaction types Slack posts to the same endpoint.
 TYPE_BLOCK_ACTIONS = "block_actions"
 TYPE_VIEW_SUBMISSION = "view_submission"
@@ -936,6 +941,13 @@ def post_adhoc_hold(text: str, value: str) -> str | None:
     """A hold notice with one Retry button."""
     return _post_onboard_blocks(text, _adhoc_blocks(text, [_button("Retry", ACTION_ADHOC_RETRY, value)]),
                                 "ad hoc hold notice")
+
+
+def post_deposit_gate(text: str, value: str) -> str | None:
+    """The deposit approval request: Approve / Reject. Returns a message ref or None. Never raises."""
+    return _post_onboard_blocks(text, _adhoc_blocks(text, [
+        _button("Approve", ACTION_DEPOSIT_APPROVE, value, "primary"),
+        _button("Reject", ACTION_DEPOSIT_REJECT, value, "danger")]), "deposit approval request")
 
 
 def post_onboard_gate(text: str, value: str) -> str | None:
