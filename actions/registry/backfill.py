@@ -4,10 +4,10 @@ Sources:
   1. Famly, every child at every site, past and future (onboard_audit.fetch_children): id, name, date of
      birth, URN (externalId), HUBSPOT deal references and parent emails. Every Famly child gets a row, so
      the registry catches everyone.
-  2. HubSpot, every deal in the Operations and Ad Hoc pipelines: the deal kind, plus its `famly_childid`
-     and `child_urn`.
-  3. The local job stores, opened read-only: done onboarding and ad hoc jobs (deal -> child) and the URN
-     allocations (deal -> URN -> child).
+  2. HubSpot, every deal in the Operations, Ad Hoc and Weekend School pipelines: the deal kind, plus its
+     `famly_childid` and `child_urn`.
+Nothing else: the local job stores are NOT a source (Drew, 2026-11-27: old done jobs pointed at deals and
+children that no longer exist).
 
 A deal is linked when every source agrees on ONE child. A deal that points at several children, or a URN
 that is on several children, is a conflict: reported, never written. Dry run by default; `confirm=True`
@@ -16,7 +16,6 @@ writes. Output is counts and codes; the CSV holds ids and codes only.
 
 import csv
 import logging
-import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,44 +47,6 @@ class Report:
         self.counts[code] += 1
 
 
-def _read_local(path: Path, sql: str) -> list[tuple]:
-    """Rows from another store, opened READ-ONLY. Missing file or table -> no rows."""
-    if not path.exists():
-        return []
-    try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
-    except sqlite3.Error:
-        return []
-    try:
-        return [tuple(r) for r in connection.execute(sql)]
-    except sqlite3.OperationalError:
-        return []
-    finally:
-        connection.close()
-
-
-def local_links() -> dict:
-    """deal -> child from done jobs, and deal -> URN from the allocations, out of the local stores."""
-    from actions.adhoc import store as adhoc_store
-    from actions.onboard import store as onboard_store
-    from actions.onboard_dry_run import urn as urn_fmt
-
-    adhoc = _read_local(adhoc_store.store_path(),
-                        "SELECT deal_id, child_id FROM adhoc_jobs WHERE status = 'done' AND child_id IS NOT NULL")
-    onboard = _read_local(onboard_store.store_path(),
-                          "SELECT deal_id, child_id FROM onboard_jobs WHERE status = 'done' AND child_id IS NOT NULL")
-    allocations = []
-    for deal_id, suffix, number in _read_local(onboard_store.store_path(),
-                                               "SELECT deal_id, site_code, number FROM onboard_urn_allocations"):
-        try:
-            allocations.append((str(deal_id), urn_fmt.format_urn(suffix, int(number))))
-        except (TypeError, ValueError):
-            continue
-    return {"adhoc_jobs": [(str(d), str(c)) for d, c in adhoc],
-            "onboard_jobs": [(str(d), str(c)) for d, c in onboard],
-            "urn_allocations": allocations}
-
-
 def _site_codes() -> dict:
     """Famly institution id -> site code, from reference/catalogue.json."""
     from integrations import catalogue
@@ -112,8 +73,7 @@ def weekend_school_deals(hubspot, stages: dict) -> list[dict]:
                                 list(hubspot_cfg.DEAL_PROPERTIES))
 
 
-def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict], links: dict,
-          site_codes: dict, stages: dict | None = None,
+def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict], site_codes: dict, stages: dict | None = None,
           weekend_deals: list[dict] | None = None) -> tuple[dict, Report]:
     """Work out what to write, without writing. Returns ({"children": [...], "deals": [(deal, child,
     kind)]}, report)."""
@@ -168,16 +128,6 @@ def build(children: dict, operations_deals: list[dict], adhoc_deals: list[dict],
             offer(deal_id, recorded)
         found = urn_children(str(deal.get("child_urn") or "").strip())
         if len(found) == 1:
-            offer(deal_id, found[0])
-    for deal_id, child_id in links.get("adhoc_jobs", []):
-        offer(deal_id, child_id)
-        kinds.setdefault(deal_id, store.ADHOC)
-    for deal_id, child_id in links.get("onboard_jobs", []):
-        offer(deal_id, child_id)
-        kinds.setdefault(deal_id, store.OPERATIONS)
-    for deal_id, urn in links.get("urn_allocations", []):
-        found = urn_children(urn)
-        if len(found) == 1 and deal_id in kinds:
             offer(deal_id, found[0])
 
     deals, no_child = [], []
@@ -251,8 +201,8 @@ def write(plan: dict, report: Report) -> Counter:
 
 
 def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = None, children=None,
-        links: dict | None = None, site_codes: dict | None = None) -> tuple[dict, Report]:
-    """The backfill. `children`, `links`, `site_codes` are for tests."""
+        site_codes: dict | None = None) -> tuple[dict, Report]:
+    """The backfill. `children` and `site_codes` are for tests."""
     from actions.adhoc_audit import runner as adhoc_audit
     from actions.onboard_audit import runner as audit
 
@@ -265,10 +215,9 @@ def run(hubspot, gql, *, confirm: bool = False, site_ids: list[str] | None = Non
     operations = audit.operations_deals(hubspot, stages, None)
     adhoc = adhoc_audit.adhoc_deals(hubspot, stages)
     weekend = weekend_school_deals(hubspot, stages)
-    links = local_links() if links is None else links
     site_codes = _site_codes() if site_codes is None else site_codes
 
-    plan, report = build(children, operations, adhoc, links, site_codes, stages, weekend)
+    plan, report = build(children, operations, adhoc, site_codes, stages, weekend)
     kinds = Counter(kind for _, _, kind in plan["deals"])
     summary = {
         "mode": "confirm" if confirm else "dry_run",

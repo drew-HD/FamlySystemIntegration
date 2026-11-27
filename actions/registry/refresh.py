@@ -217,7 +217,7 @@ def write_report(rows, reports_dir: Path, today: date, tag: str = "", lookup: Lo
 
 def run(hubspot, gql, *, dry_run: bool = False, post=None, today: date | None = None,
         state_file: Path | None = None, reports_dir: Path | str | None = None, site_ids=None,
-        children=None, links=None, site_codes=None) -> dict:
+        children=None, site_codes=None) -> dict:
     """The nightly refresh. Returns counts (plus, on a dry run, `messages`: the Slack text, for the terminal only).
     Raises RefreshAborted (after one Slack line) when it stopped before writing; a read failure is reported the
     same way and re-raised. `dry_run`: no registry write, no state, no Slack."""
@@ -252,7 +252,7 @@ def run(hubspot, gql, *, dry_run: bool = False, post=None, today: date | None = 
     if code:
         raise fail(code)
     try:
-        summary, report = backfill.run(hubspot, gql, confirm=not dry_run, children=children, links=links,
+        summary, report = backfill.run(hubspot, gql, confirm=not dry_run, children=children,
                                        site_codes=site_codes)
     except sqlite3.Error as exc:            # the registry write (every read comes before it)
         raise fail(f"write_failed_{type(exc).__name__}", partial=True) from None

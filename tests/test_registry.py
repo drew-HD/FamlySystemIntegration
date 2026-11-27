@@ -109,12 +109,12 @@ class MatchTests(unittest.TestCase):
 
 
 class BackfillTests(Base):
-    def run_backfill(self, children, deals, links=None, confirm=False):
+    def run_backfill(self, children, deals, confirm=False):
         children = {c.id: c for c in children}
         return backfill.run(FakeHubSpot(deals), gql=None, confirm=confirm, children=children,
-                            links=links or {}, site_codes={"inst-cw": "HDCW"})
+                            site_codes={"inst-cw": "HDCW"})
 
-    def test_links_by_reference_famly_childid_urn_and_jobs(self):
+    def test_links_by_reference_famly_childid_and_urn_only(self):
         kids = [child("c1", refs=["101"], urn="HD0001CW", emails=["p@example.test"]),
                 child("c2", name="Testchild Beta", urn="HD0002CW"),
                 child("c3", name="Testchild Gamma", urn="HD0003CW"),
@@ -124,14 +124,13 @@ class BackfillTests(Base):
                  {"id": "201", "dealstage": "adhoc", "child_urn": "hd0003cw"},
                  {"id": "202", "dealstage": "adhoc"},
                  {"id": "203", "dealstage": "adhoc"}]
-        links = {"adhoc_jobs": [("202", "c4")], "urn_allocations": [("203", "HD0001CW")]}
-        summary, report = self.run_backfill(kids, deals, links, confirm=True)
-        self.assertEqual(summary["deals_to_link"], {"operations": 2, "adhoc": 3})
+        summary, report = self.run_backfill(kids, deals, confirm=True)
+        self.assertEqual(summary["deals_to_link"], {"operations": 2, "adhoc": 1})
         self.assertEqual(store.by_deal("101").famly_child_id, "c1")
         self.assertEqual(store.by_deal("102").famly_child_id, "c2")
         self.assertEqual(store.by_deal("201").famly_child_id, "c3")
-        self.assertEqual(store.by_deal("202").famly_child_id, "c4")
-        self.assertEqual(store.by_deal("203").famly_child_id, "c1")
+        self.assertIsNone(store.by_deal("202"))                         # no reference, id or URN: not linked
+        self.assertIsNone(store.by_deal("203"))
         c1 = store.by_child_id("c1")
         self.assertEqual((c1.full_name, c1.dob, c1.site_code, c1.urns), (TEST_NAME, "2024-01-02", "HDCW", ["hd0001cw"]))
         self.assertEqual(store.stats()["children"], 4)
