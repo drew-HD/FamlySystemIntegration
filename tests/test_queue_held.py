@@ -71,7 +71,7 @@ class HoldVisibilityTests(HeldVisibilityCase):
         self.assertEqual((job.status, job.next_index), (jobs.STATUS_HELD, 1))
         self.assertEqual(len(self.famly.commits), 1)  # plan 1 committed, plan 2 held
         self.assertIn(f"warning: {PAST_LAST_DAY}", job.detail)
-        self.assertIn(f"Held for approval — warning: {PAST_LAST_DAY}", self.previews_posted[-1][0])
+        self.assertIn(f"• Held for approval: warning: {PAST_LAST_DAY}", self.previews_posted[-1][0])
         self.assertEqual(jobs.consecutive_failures(), 0)
 
     def test_the_note_and_the_slack_line_hold_codes_only(self):

@@ -308,7 +308,16 @@ class ChainTestCase(unittest.TestCase):
         return self.previews_posted[-1][0]
 
     def heading(self, index=-1):
-        return self.previews_posted[index][0].splitlines()[0]
+        """The posted plan as "*Plan i of n (kind, from to to)*", rebuilt from the approval message: its title
+        line ("... plan i of n approval* (from dd/mm/yyyy to dd/mm/yyyy)") and its Funding / Advance fee lines."""
+        import re
+        text = self.previews_posted[index][0]
+        match = re.search(r"plan (\d+) of (\d+) approval\* \(from (\S+) to (.+)\)$", text.splitlines()[0])
+        if match is None:
+            return text.splitlines()[0]
+        kind = ["funded" if "\n• Funding:" in text else "base"] + (["advanced"] if "\n• Advance fee:" in text else [])
+        span = f"{match[3]} onwards" if match[4] == "open-ended" else f"{match[3]} to {match[4]}"
+        return f"*Plan {match[1]} of {match[2]} ({', '.join(kind)}, {span})*"
 
     def run_all(self, body=None):
         """Start, then approve every plan until the chain stops asking."""
@@ -356,7 +365,7 @@ class BaseOnlyTests(ChainTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(data["segments"]), 1)
         self.assertEqual(len(self.previews_posted), 1)
-        self.assertEqual(self.heading(), "*Plan 1 of 1 (base, 2026-09-01 to 2027-07-31)*")
+        self.assertEqual(self.heading(), "*Plan 1 of 1 (base, 01/09/2026 to 31/07/2027)*")
 
     def test_the_only_plan_is_a_first_plan_with_an_end_date_and_no_old_plan(self):
         self.start()
@@ -394,15 +403,15 @@ class FundedInTheMiddleTests(ChainTestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual([s["funded"] for s in data["segments"]], [False, True, False])
-        self.assertEqual(self.heading(), "*Plan 1 of 3 (base, 2026-09-01 to 2026-10-31)*")
+        self.assertEqual(self.heading(), "*Plan 1 of 3 (base, 01/09/2026 to 31/10/2026)*")
 
         self.approve()
         self.assertEqual(
-            self.heading(), "*Plan 2 of 3 (funded, 2026-11-01 to 2026-12-31)*"
+            self.heading(), "*Plan 2 of 3 (funded, 01/11/2026 to 31/12/2026)*"
         )
 
         self.approve()
-        self.assertEqual(self.heading(), "*Plan 3 of 3 (base, 2027-01-01 to 2027-07-31)*")
+        self.assertEqual(self.heading(), "*Plan 3 of 3 (base, 01/01/2027 to 31/07/2027)*")
 
     def test_only_the_final_plan_is_created_with_an_end_date(self):
         self.run_all(with_funding())
@@ -455,7 +464,7 @@ class FundedFromTheStartTests(ChainTestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual([s["funded"] for s in data["segments"]], [True, False])
-        self.assertEqual(self.heading(), "*Plan 1 of 2 (funded, 2026-09-01 to 2026-12-18)*")
+        self.assertEqual(self.heading(), "*Plan 1 of 2 (funded, 01/09/2026 to 18/12/2026)*")
 
         call = self.famly.previews[0]
         self.assertNotIn("oldPlanId", call["params"])
@@ -499,11 +508,11 @@ class OverlapTests(ChainTestCase):
         self.assertEqual(
             headings,
             [
-                "*Plan 1 of 5 (base, 2026-09-01 to 2026-09-30)*",
-                "*Plan 2 of 5 (base, advanced, 2026-10-01 to 2026-10-31)*",
-                "*Plan 3 of 5 (funded, advanced, 2026-11-01 to 2026-11-30)*",
-                "*Plan 4 of 5 (funded, 2026-12-01 to 2027-03-31)*",
-                "*Plan 5 of 5 (base, 2027-04-01 to 2027-07-31)*",
+                "*Plan 1 of 5 (base, 01/09/2026 to 30/09/2026)*",
+                "*Plan 2 of 5 (base, advanced, 01/10/2026 to 31/10/2026)*",
+                "*Plan 3 of 5 (funded, advanced, 01/11/2026 to 30/11/2026)*",
+                "*Plan 4 of 5 (funded, 01/12/2026 to 31/03/2027)*",
+                "*Plan 5 of 5 (base, 01/04/2027 to 31/07/2027)*",
             ],
         )
 
@@ -595,7 +604,7 @@ class AdvancedAtTheEndTests(ChainTestCase):
 
         self.approve()
         self.assertEqual(
-            self.heading(), "*Plan 2 of 4 (funded, 2026-11-01 to 2026-12-31)*"
+            self.heading(), "*Plan 2 of 4 (funded, 01/11/2026 to 31/12/2026)*"
         )
 
 
@@ -611,7 +620,7 @@ class OpenEndedLeaveTests(ChainTestCase):
         self.approve()
         self.approve()
 
-        self.assertEqual(self.heading(), "*Plan 3 of 3 (base, 2027-01-01 onwards)*")
+        self.assertEqual(self.heading(), "*Plan 3 of 3 (base, 01/01/2027 onwards)*")
 
     def test_base_only_and_open_ended_is_one_open_plan(self):
         data, _ = self.start(payload(leave_date=""))
@@ -1159,7 +1168,7 @@ class AdjustKeepsTheChainTests(ChainTestCase):
         self.adjust(self.last_preview_id())
 
         text = self.adjusted_posted[-1][0]
-        self.assertIn("• Plan 2 of 3 (funded, 2026-11-01 to 2026-12-31)", text)
+        self.assertIn("• Plan 2 of 3 (funded, 01/11/2026 to 31/12/2026)", text)
 
     def test_the_adjusted_re_price_is_sent_with_the_old_plan_id(self):
         self.start(with_funding())
@@ -1180,7 +1189,7 @@ class AdjustKeepsTheChainTests(ChainTestCase):
         chain = self.chain(data)
         self.assertEqual(chain.next_index, 2)
         self.assertEqual(chain.segments[1]["plan_id"], "plan-2")
-        self.assertEqual(self.heading(), "*Plan 3 of 3 (base, 2027-01-01 to 2027-07-31)*")
+        self.assertEqual(self.heading(), "*Plan 3 of 3 (base, 01/01/2027 to 31/07/2027)*")
         committed = self.famly.commits[1]
         self.assertEqual(committed["params"]["oldPlanId"], "plan-1")
         adjustments = self.sent(committed)["planParts"][0]["totalAdjustments"]
@@ -1399,13 +1408,13 @@ class LabelTests(unittest.TestCase):
     def test_the_heading_reads_as_specified(self):
         self.assertEqual(
             engine.heading_text(self.SEGMENTS, 1),
-            "Plan 2 of 3 (funded, 2026-11-01 to 2026-12-31)",
+            "Plan 2 of 3 (funded, 01/11/2026 to 31/12/2026)",
         )
 
     def test_an_open_ended_segment_says_onwards(self):
         self.assertEqual(
             engine.heading_text(self.SEGMENTS, 2),
-            "Plan 3 of 3 (base, advanced, 2027-01-01 onwards)",
+            "Plan 3 of 3 (base, advanced, 01/01/2027 onwards)",
         )
 
 
@@ -1752,7 +1761,7 @@ class ChainResumeTests(SweepTestCase):
         self.assertTrue(result["resumed"])
         self.assertEqual(result["index"], 1)
         self.assertEqual(
-            self.heading(), "*Plan 2 of 3 (funded, 2026-11-01 to 2026-12-31)*"
+            self.heading(), "*Plan 2 of 3 (funded, 01/11/2026 to 31/12/2026)*"
         )
         stored = preview_store.get(self.last_preview_id())
         self.assertEqual((stored.chain_id, stored.chain_index), (data["chain_id"], 1))
@@ -2176,7 +2185,7 @@ class ExclusiveEndTests(ChainTestCase):
 
         self.assertEqual(self.famly.plans[0]["to"], "2026-11-01")
         self.assertEqual(
-            self.heading(), "*Plan 3 of 3 (base, 2027-01-01 to 2027-07-31)*"
+            self.heading(), "*Plan 3 of 3 (base, 01/01/2027 to 31/07/2027)*"
         )
         self.approve()  # plan 3: plan 2 now ends 2027-01-01
 
@@ -2195,7 +2204,7 @@ class ExclusiveEndTests(ChainTestCase):
                 ("2027-01-01", "2027-07-31"),
             ],
         )
-        self.assertEqual(self.heading(), "*Plan 1 of 3 (base, 2026-09-01 to 2026-10-31)*")
+        self.assertEqual(self.heading(), "*Plan 1 of 3 (base, 01/09/2026 to 31/10/2026)*")
 
 # --------------------------------------------------------------------------- #
 # The final plan's end date: Famly's `to` is leave + 1 day, sent exactly once
@@ -2247,7 +2256,7 @@ class FinalEndDateTests(ChainTestCase):
         self.approve()
         self.approve()
 
-        self.assertEqual(self.heading(), "*Plan 3 of 3 (base, 2027-01-01 to 2027-07-31)*")
+        self.assertEqual(self.heading(), "*Plan 3 of 3 (base, 01/01/2027 to 31/07/2027)*")
 
     def test_the_chain_record_and_segments_stay_inclusive(self):
         data, _ = self.start(with_funding())
@@ -2370,14 +2379,14 @@ class SummaryShowsTheLastCoveredDayTests(unittest.TestCase):
         return slack_module.build_summary(Plan(id="p", child_id=CHILD, from_="2026-09-01", to=to), [])
 
     def test_famlys_exclusive_end_is_shown_as_the_last_day(self):
-        self.assertIn("Dates: 2026-09-01 → 2026-12-31", self.summary("2027-01-01"))
-        self.assertIn("→ 2028-02-29", self.summary("2028-03-01"))
+        self.assertIn("(from 01/09/2026 to 31/12/2026)", self.summary("2027-01-01"))
+        self.assertIn("to 29/02/2028)", self.summary("2028-03-01"))
 
     def test_open_ended_is_unchanged(self):
-        self.assertIn("→ open-ended", self.summary(None))
+        self.assertIn("to open-ended)", self.summary(None))
 
     def test_a_value_that_is_not_a_date_is_shown_as_it_is(self):
-        self.assertIn("→ notadate", self.summary("notadate"))
+        self.assertIn("to notadate)", self.summary("notadate"))
 
 
 if __name__ == "__main__":

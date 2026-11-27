@@ -146,6 +146,8 @@ class Prepared:
     funding_clamp: Any = None  # the funded_hours.Outcome, when hours were clamped
     site: dict = dataclasses.field(default_factory=dict)
     preview_id: str | None = None
+    payload: dict = dataclasses.field(default_factory=dict)   # the flat plan payload (for the message facts)
+    deal_id: str | None = None
 
 
 def run_preview_and_post(
@@ -156,6 +158,9 @@ def run_preview_and_post(
     chain_id: str | None = None,
     chain_index: int | None = None,
     heading: str | None = None,
+    position: tuple[int, int] = (0, 1),
+    advance: tuple | None = None,
+    span: tuple | None = None,
 ) -> tuple[dict, int]:
     """Preview a plan and post it to Slack: `prepare_preview` then `post_prepared`.
 
@@ -172,7 +177,7 @@ def run_preview_and_post(
     if prepared.status != 200:
         return prepared.data, prepared.status
 
-    post_prepared(prepared, heading=heading)
+    post_prepared(prepared, heading=heading, position=position, advance=advance, span=span)
     return prepared.data, 200
 
 
@@ -325,6 +330,8 @@ def prepare_preview(
 
     preview_id = str(uuid.uuid4())
     data["preview_id"] = preview_id
+    # Once: a body with two different deal ids posts its notice from here, and must post it only once.
+    deal_id = hubspot_intake.deal_id_of(payload)
 
     # The full plan is logged, not returned.
     _log_plan_full(preview_id, preview.raw)
@@ -365,7 +372,7 @@ def prepare_preview(
             job_index=job_index,
             # The deal's record id when the webhook sent one: lets a successful commit set
             # famly_plan_uploaded. An id only.
-            deal_id=hubspot_intake.deal_id_of(payload),
+            deal_id=deal_id,
         )
     except Exception as exc:  # noqa: BLE001 - storing must not break the preview
         logger.warning(
@@ -386,18 +393,23 @@ def prepare_preview(
         funding_clamp=funding_clamp,
         site=site,
         preview_id=preview_id,
+        payload=dict(hubspot_intake.unwrap_payload(payload) or {}),
+        deal_id=deal_id,
     )
 
 
 def post_prepared(
-    prepared: Prepared, *, heading: str | None = None, child_name: Any = ...
+    prepared: Prepared, *, heading: str | None = None, child_name: Any = ...,
+    position: tuple[int, int] = (0, 1), advance: tuple | None = None, notes=(), facts: dict | None = None,
+    span: tuple | None = None,
 ) -> bool:
-    """Post a prepared preview to Slack with its Approve/Adjust/Reject buttons.
+    """Post a prepared preview to Slack with its Approve / Reject buttons.
 
-    Sets `slack_posted` on the prepared data and returns it. `heading` replaces
-    the message's first line (create_timeline's "Plan 2 of 4 (...)"); None keeps
-    the usual one. `child_name` is for a caller that has already looked the name
-    up; left out, it is looked up here.
+    Sets `slack_posted` on the prepared data and returns it. `position` is (index, total) of the plan in its
+    timeline ("plan 2 of 4"); `advance` the advance fee period (from, to) when this plan has the advance fee;
+    `notes` extra lines for the Warnings section (e.g. why the queue held it); `heading` an optional line under
+    the title. `facts` replaces the looked-up facts (tests). `child_name` is for a caller that has already
+    looked the name up; left out, it is looked up here.
     """
     data, preview, warnings = prepared.data, prepared.preview, prepared.warnings
 
@@ -411,6 +423,13 @@ def post_prepared(
     if child_name is ...:
         child_name = child_lookup.lookup_child_name(getattr(preview.plan, "child_id", None))
 
+    if facts is None:
+        from integrations import plan_facts
+        facts = plan_facts.facts_for(
+            prepared.payload, getattr(preview.plan, "child_id", None), (prepared.site or {}).get("site_code"),
+            deal_id=prepared.deal_id, index=position[0], total=position[1], advance=advance, notes=notes,
+            span=span)
+
     data["slack_posted"] = slack.post_preview(
         slack.build_summary(
             preview.plan,
@@ -422,6 +441,7 @@ def post_prepared(
             heading=heading,
             rounding=prepared.rounded_periods,
             funding_clamp=prepared.funding_clamp,
+            facts=facts,
         ),
         prepared.preview_id,
     )

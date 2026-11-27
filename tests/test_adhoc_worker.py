@@ -139,7 +139,7 @@ class GateTests(Case):
             "Deal: 1 · Site: Canada Water",
             "Child exists in Famly: Zed Quill (Famly Id: c1)",
             "Ad hoc only child",
-            "1. 28 Dec 2026 Morning £75.00",
+            "1. 28/12/2026 Morning £75.00",
             "Total £75.00 · Discount 5% (-£3.75) · To pay £71.25",
             "Steps: book_1_sessions",
             f"Plan: `{job.plan_hash}`"])
@@ -157,7 +157,7 @@ class GateTests(Case):
         self.assertNotIn("Who:", text)
         self.assertNotIn("Discount", text)                                   # no discount line when there is none
         self.assertEqual((messages.site_name("HDCITY"), messages.long_date("2026-12-05"), messages.percent("0.325"),
-                          messages.percent("0.1"), messages.percent("0.025")), ("City", "05 Dec 2026", "32.5%", "10%", "2.5%"))
+                          messages.percent("0.1"), messages.percent("0.025")), ("City", "05/12/2026", "32.5%", "10%", "2.5%"))
 
     def test_holds_are_a_plain_notice_with_retry_and_a_webhook_job_must_be_approved(self):
         _r, job = self.run_job(plan(holds=["discount_invalid", "session_date_past"], child=()))
@@ -176,9 +176,9 @@ class GateTests(Case):
                                                             {"date": "2026-12-29", "kind": "ANOTHER_INPUT_PURCHASE"}]})
         self.run_job(held)
         text = self.notifier.sent[-1]["text"]
-        self.assertIn("A booked date is in the past (02 Nov 2026, 09 Nov 2026).", text)
-        self.assertIn("Famly reports a booking conflict for these dates: 28 Dec 2026 (already booked); "
-                      "29 Dec 2026 (another session on this booking is on the same day).", text)
+        self.assertIn("A booked date is in the past (02/11/2026, 09/11/2026).", text)
+        self.assertIn("Famly reports a booking conflict for these dates: 28/12/2026 (already booked); "
+                      "29/12/2026 (another session on this booking is on the same day).", text)
 
     def test_unreadable_deals_and_worker_errors_are_codes_never_messages(self):
         _r, job = self.run_job({"error": "deal_not_found"})
@@ -526,4 +526,4 @@ class SkippedPastMessageTests(unittest.TestCase):
         p = plan()
         self.assertNotIn("Past dates not booked", messages.gate_text(p, "a" * 16, "dry"))
         p["skippedPast"] = ["2026-11-02", "2026-11-09"]
-        self.assertIn("Past dates not booked: 02 Nov 2026, 09 Nov 2026", messages.gate_text(p, "a" * 16, "dry"))
+        self.assertIn("Past dates not booked: 02/11/2026, 09/11/2026", messages.gate_text(p, "a" * 16, "dry"))

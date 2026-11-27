@@ -232,6 +232,13 @@ class HubSpotClient:
         value = (body.get("properties") or {}).get(PLAN_UPLOADED_PROPERTY)
         return None if value in (None, "") else str(value)
 
+    def read_deal_property(self, deal_id: str, name: str) -> str | None:
+        """One deal property's value (read-only; None when empty), e.g. `full_funded` for the plan message.
+        Raises HubSpotError (status 404) if there is no such deal."""
+        body = self._get(f"/crm/v3/objects/deals/{deal_id}", {"properties": name})
+        value = (body.get("properties") or {}).get(name)
+        return None if value in (None, "") else str(value)
+
     def read_plan_state(self, deal_id: str) -> tuple[str | None, str | None]:
         """(the deal's `famly_childid`, its `famly_plan_uploaded` value), each None when empty. One
         read-only GET of those two properties. Raises HubSpotError (status 404) if there is no deal."""

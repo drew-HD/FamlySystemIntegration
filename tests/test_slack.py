@@ -178,9 +178,11 @@ class BuildSummaryTests(unittest.TestCase):
         self.assertEqual(days[:4], ["Monday", "Tuesday", "Wednesday", "Friday"])
         self.assertIn("*Sessions* (4)", self.text)
 
-    def test_uses_session_titles_from_the_reference(self):
-        self.assertIn("• Monday — Full Day — 203.13", self.text)
-        self.assertIn("• Friday — Morning Session — 101.50", self.text)
+    def test_uses_session_titles_from_the_reference_without_prices(self):
+        self.assertIn("• Monday — Full Day\n", self.text)
+        self.assertIn("• Friday — Morning Session\n", self.text)
+        self.assertNotIn("203.13", self.text)
+        self.assertNotIn("101.50", self.text)
 
     def test_falls_back_to_session_id_when_the_title_is_unknown(self):
         plan = parse_plan(
@@ -193,10 +195,9 @@ class BuildSummaryTests(unittest.TestCase):
         text = slack.build_summary(plan, [], session_titles=self.reference.session_titles)
         self.assertIn("• Monday — s-x", text)
 
-    def test_lists_products_with_amount_and_title(self):
-        self.assertIn("*Products* (2)", self.text)
-        self.assertIn("• Monday — 1× Hot Lunch — 3.50", self.text)
-        self.assertIn("• Wednesday — 3× Nappies", self.text)  # no bookedPrice -> no price
+    def test_products_are_not_listed(self):
+        self.assertNotIn("Products", self.text)
+        self.assertNotIn("Hot Lunch", self.text)
 
     def test_products_section_is_omitted_when_there_are_none(self):
         plan = parse_plan(
@@ -213,7 +214,7 @@ class BuildSummaryTests(unittest.TestCase):
         self.assertIn("• Weekly total: 187.50", self.text)
         self.assertIn("• Monthly estimate: 812.50", self.text)
 
-    def test_notes_a_mid_plan_rate_change_without_enumerating_periods(self):
+    def test_a_mid_plan_rate_change_is_an_other_period(self):
         plan = parse_plan(
             {
                 "planStates": [
@@ -223,7 +224,7 @@ class BuildSummaryTests(unittest.TestCase):
             }
         )
         text = slack.build_summary(plan, [])
-        self.assertIn("rate changes during plan", text)
+        self.assertIn("*Other periods*\n• Price changes from unknown (usually when the child turns 3)", text)
         # The first (current) state's figure is the one shown.
         self.assertIn("• Weekly total: 187.50", text)
         self.assertNotIn("200.00", text)
@@ -240,14 +241,9 @@ class BuildSummaryTests(unittest.TestCase):
             {"warning": {"title": "Unseen problem", "severity": "error"}, "known": None},
         ]
         text = slack.build_summary(self.plan, warnings, session_titles=self.reference.session_titles)
-        self.assertIn("*2 warning(s)*", text)
+        self.assertIn("*Warnings*\n• Funding mismatch", text)
         self.assertIn("[funding_mismatch]", text)
         self.assertIn("[UNTRACKED]", text)
-
-    def test_price_comes_from_the_active_pricing_group_only(self):
-        # MONDAY has both the active group's 203.13 and another group's 180.00.
-        self.assertIn("• Monday — Full Day — 203.13", self.text)
-        self.assertNotIn("180.00", self.text)
 
     def test_price_is_omitted_when_the_active_group_has_none(self):
         plan = parse_plan(
@@ -279,8 +275,7 @@ class BuildSummaryTests(unittest.TestCase):
 
     def test_falls_back_to_ids_without_a_catalogue(self):
         text = slack.build_summary(self.plan, [])
-        self.assertIn("• Monday — s-full — 203.13", text)
-        self.assertIn("• Monday — 1× p-lunch — 3.50", text)
+        self.assertIn("• Monday — s-full\n", text)
         self.assertNotIn("Full Day", text)
 
     def test_missing_reference_and_plan_never_raise(self):
@@ -382,9 +377,7 @@ class CatalogueTests(unittest.TestCase):
         text = slack.build_summary(
             plan, [], session_titles=sessions, product_titles=products
         )
-        self.assertIn("• Monday — Full Day (Funded) — 203.13", text)
-        # The product has no entry, so it stays a UUID.
-        self.assertIn("• Monday — 1× p-lunch — 3.50", text)
+        self.assertIn("• Monday — Full Day (Funded)\n", text)
 
 
 class VerifySlackRequestTests(unittest.TestCase):

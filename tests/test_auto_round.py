@@ -136,9 +136,10 @@ class TwoPeriodTests(AutoRoundTestCase):
         self.preview()
 
         text = self.last_text()
-        self.assertIn("Rounded: 269.03 -> 270.00 (from 2026-09-01)", text)
-        second = (date(2026, 9, 1) + timedelta(days=120)).isoformat()
-        self.assertIn(f"Rounded: 1503.30 -> 1503.00 (from {second})", text)
+        self.assertIn("*Pricing*\n• Weekly total: unknown\n• Monthly estimate: 269.03\n• Rounded: 270.00\n", text)
+        second = (date(2026, 9, 1) + timedelta(days=120)).strftime("%d/%m/%Y")
+        self.assertIn(f"*Other periods*\n• Price changes from {second} (usually when the child turns 3)\n"
+                      "   Monthly estimate: 1,503.30 · Rounded: 1,503.00", text)
 
     def test_the_approved_plan_is_committed_with_the_adjustments(self):
         self.preview()
@@ -434,9 +435,9 @@ class TimelineTests(AutoRoundTestCase):
 
     def test_the_headings_and_old_plan_ids_are_unchanged(self):
         self.start(self.chain_body())
-        self.assertEqual(self.heading(), "*Plan 1 of 3 (base, 2026-09-01 to 2026-10-31)*")
+        self.assertEqual(self.heading(), "*Plan 1 of 3 (base, 01/09/2026 to 31/10/2026)*")
         self.approve()
-        self.assertEqual(self.heading(), "*Plan 2 of 3 (funded, 2026-11-01 to 2026-12-31)*")
+        self.assertEqual(self.heading(), "*Plan 2 of 3 (funded, 01/11/2026 to 31/12/2026)*")
         self.assertEqual(self.famly.previews[-1]["params"].get("oldPlanId"), "plan-1")
 
     def test_the_read_back_passes_quietly_when_the_plan_saved_as_intended(self):

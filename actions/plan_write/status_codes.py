@@ -211,6 +211,7 @@ HELD_TEXT_CODES = (
     ("is 0 and no funding is applied", "zero_estimate_no_funding"),
     ("is not above 0", "estimate_not_above_zero"),
     ("QUEUE_MAX_MONTHLY", "estimate_over_ceiling"),
+    # Retired 2026-11-27 (QUEUE_ALLOWED_INSTITUTIONS removed); kept so jobs held before then still read.
     ("QUEUE_ALLOWED_INSTITUTIONS", "institution_not_allowed"),
     ("not allowed to auto-commit", "institution_not_allowed"),
 )

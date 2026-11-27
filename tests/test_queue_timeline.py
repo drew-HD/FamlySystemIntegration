@@ -97,7 +97,8 @@ class QueueTestCase(harness.ChainTestCase):
             "os.environ",
             {
                 "QUEUE_MODE": "auto",
-                "QUEUE_ALLOWED_INSTITUTIONS": harness.INSTITUTION,
+                # Most tests here are about the unattended path; AutoCommitSwitchTests covers the default (off).
+                "QUEUE_AUTO_COMMIT": "on",
                 "QUEUE_MAX_COMMITS_PER_DAY": "20",
                 "QUEUE_MAX_MONTHLY": "5000",
                 "AUTO_ROUND_DEFAULT": "",
@@ -598,8 +599,8 @@ class HeldTests(QueueTestCase):
         self.run_all()
 
         text, preview_id = self.previews_posted[-1]
-        self.assertIn("*Plan 2 of 3 (funded, 2026-11-01 to 2026-12-31)*", text)
-        self.assertIn("Held for approval — warning: Something odd", text)
+        self.assertIn("plan 2 of 3 approval* (from 01/11/2026 to 31/12/2026)", text)
+        self.assertIn("*Warnings*\n• Held for approval: warning: Something odd", text)
         stored = preview_store.get(preview_id)
         self.assertEqual(stored.status, preview_store.STATUS_PENDING)
         self.assertEqual(stored.old_plan_id, "plan-1")
@@ -610,7 +611,7 @@ class HeldTests(QueueTestCase):
             self.queue()
             self.run_all()
 
-        self.assertIn(f"Alex Smith (`{CHILD}`)", self.previews_posted[-1][0])
+        self.assertTrue(self.previews_posted[-1][0].startswith("*Alex Smith plan 2 of 3 approval*"))
 
     def test_approving_it_returns_the_job_to_the_queue_and_the_worker_carries_on(self):
         self.warn_on_funded()
@@ -797,41 +798,59 @@ class CleanCheckTests(QueueTestCase):
 # --------------------------------------------------------------------------- #
 # Safety rails
 # --------------------------------------------------------------------------- #
-class InstitutionLimitTests(QueueTestCase):
-    def test_an_institution_not_on_the_list_is_held(self):
-        with mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": "HDCW"}):
-            data = self.queue()
-            self.run_all()
+class AutoCommitSwitchTests(QueueTestCase):
+    """QUEUE_AUTO_COMMIT off (the default): every plan waits for a Slack Approve. QUEUE_ALLOWED_INSTITUTIONS
+    is gone: the institution no longer decides anything."""
 
+    def off(self):
+        env = mock.patch.dict("os.environ", {"QUEUE_AUTO_COMMIT": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_by_default_every_plan_waits_for_approve_and_nothing_commits(self):
+        self.off()
+        data = self.queue()
+        self.run_all()
         job = self.job(data)
-        self.assertEqual(job.status, jobs.STATUS_HELD)
-        self.assertIn("not in QUEUE_ALLOWED_INSTITUTIONS", job.detail)
+        self.assertEqual((job.status, job.detail), (jobs.STATUS_HELD, worker.AWAITING_APPROVAL))
         self.assertEqual(self.famly.commits, [])
-        self.assertEqual(len(self.previews_posted), 1)  # the human is asked
+        self.assertEqual(len(self.previews_posted), 1)                     # the human is asked
+        self.assertNotIn("Held for approval", self.previews_posted[-1][0])  # not a problem, no reason shown
+        self.assertNotIn("hold_codes", job.segments[0])                     # not flagged as held
 
-    def test_an_empty_list_allows_nothing(self):
-        with mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": ""}):
-            data = self.queue()
+    def test_approve_commits_each_plan_in_turn(self):
+        self.off()
+        data = self.queue()
+        self.run_all()
+        for expected in range(1, len(self.job(data).segments) + 1):
+            text = approval.handle_click(slack.ACTION_APPROVE, self.job(data).preview_id, "drew")
+            self.assertIn("committed to Famly", text)
             self.run_all()
-
-        self.assertEqual(self.job(data).status, jobs.STATUS_HELD)
-        self.assertEqual(self.famly.commits, [])
-
-    def test_matching_is_case_insensitive_and_trimmed(self):
-        with mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": " hdcw , hdcity "}):
-            data = self.queue()
-            self.run_all()
-
+            self.assertEqual(len(self.famly.commits), expected)            # one plan per Approve
         self.assertEqual(self.job(data).status, jobs.STATUS_DONE)
 
-    def test_the_list_is_read_afresh_for_every_plan(self):
+    def test_reject_cancels_and_commits_nothing(self):
+        self.off()
+        data = self.queue()
+        self.run_all()
+        approval.handle_click(slack.ACTION_REJECT, self.job(data).preview_id, "drew")
+        self.assertEqual(self.job(data).status, jobs.STATUS_CANCELLED)
+        self.assertEqual(self.famly.commits, [])
+
+    def test_with_auto_on_any_institution_commits(self):
+        with mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": ""}):   # the old variable is ignored
+            data = self.queue()
+            self.run_all()
+        self.assertEqual(self.job(data).status, jobs.STATUS_DONE)
+
+    def test_the_switch_is_read_afresh_for_every_plan(self):
         data = self.queue()
         real_post = self.famly.post
 
         def post(path, params=None, json_body=None):
             node = real_post(path, params, json_body)
             if (params or {}).get("preview") == "false":
-                os_env = mock.patch.dict("os.environ", {"QUEUE_ALLOWED_INSTITUTIONS": "HDCW"})
+                os_env = mock.patch.dict("os.environ", {"QUEUE_AUTO_COMMIT": "off"})
                 os_env.start()
                 self.addCleanup(os_env.stop)
             return node
@@ -839,7 +858,7 @@ class InstitutionLimitTests(QueueTestCase):
         with mock.patch.object(self.famly, "post", post):
             self.run_all()
 
-        self.assertEqual(self.job(data).status, jobs.STATUS_HELD)
+        self.assertEqual((self.job(data).status, self.job(data).detail), (jobs.STATUS_HELD, worker.AWAITING_APPROVAL))
         self.assertEqual(len(self.famly.commits), 1)  # plan 1 only
 
 
@@ -1270,7 +1289,8 @@ class CommandTests(QueueTestCase):
         self.assertFalse(result["paused"])
         self.assertEqual(result["commitsToday"], 1)
         self.assertEqual(result["jobs"]["queued"], 1)
-        self.assertEqual(result["allowedInstitutions"], [harness.INSTITUTION])
+        self.assertTrue(result["autoCommit"])
+        self.assertNotIn("allowedInstitutions", result)
 
     def test_list_filters_by_status(self):
         self.queue()
@@ -2163,7 +2183,7 @@ class FinalEndDateTests(QueueTestCase):
         self.assertEqual(self.job(data).segments[-1]["to"], "2027-07-31")
         self.assertEqual(
             harness.engine.heading_text(self.job(data).segments, 2),
-            "Plan 3 of 3 (base, 2027-01-01 to 2027-07-31)",
+            "Plan 3 of 3 (base, 01/01/2027 to 31/07/2027)",
         )
 
 

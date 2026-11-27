@@ -302,68 +302,70 @@ class SlackSummaryTests(unittest.TestCase):
     def summary(self, node, today, **kwargs):
         return slack.build_summary(parse_plan(node), [], today=today, **kwargs)
 
+    def pricing(self, text):
+        return text.split("*Pricing*\n", 1)[1].split("\n\n", 1)[0]
+
+    def other_periods(self, text):
+        return text.split("*Other periods*\n", 1)[1].split("\n\n", 1)[0] if "*Other periods*" in text else ""
+
     def test_two_periods_with_today_after_the_switch_shows_the_second(self):
         text = self.summary(plan_node(FIRST, SECOND), AFTER_SWITCH)
 
-        self.assertIn("*Current pricing* (From 2026-08-01)", text)
-        self.assertIn("• Weekly total: 162.00", text)
-        self.assertIn("• Monthly estimate: 705.08", text)
-        self.assertIn("• Public funding: 116.24 (12h)", text)
+        pricing = self.pricing(text)
+        self.assertIn("• Weekly total: 162.00", pricing)
+        self.assertIn("• Monthly estimate: 705.08", pricing)
+        self.assertIn("• Public funding: 116.24 (12h)", pricing)
 
     def test_the_stale_first_period_figures_are_not_shown_as_current(self):
+        pricing = self.pricing(self.summary(plan_node(FIRST, SECOND), AFTER_SWITCH))
+
+        self.assertNotIn("173.00", pricing)
+        self.assertNotIn("749.96", pricing)
+        self.assertNotIn("129.65", pricing)
+
+    def test_the_other_period_is_listed_under_other_periods(self):
         text = self.summary(plan_node(FIRST, SECOND), AFTER_SWITCH)
 
-        self.assertNotIn("• Weekly total: 173.00", text)
-        self.assertNotIn("• Monthly estimate: 749.96", text)
-        self.assertNotIn("• Public funding: 129.65", text)
-
-    def test_the_other_period_is_listed_on_one_line(self):
-        text = self.summary(plan_node(FIRST, SECOND), AFTER_SWITCH)
-
-        self.assertIn("• _(rate changes during plan — 2 periods)_", text)
-        self.assertEqual(text.count("Other periods:"), 1)
+        self.assertEqual(text.count("*Other periods*"), 1)
         # The first period is the "other" one here, with its own estimate.
-        self.assertIn("• Other periods: From 2026-01-20 — 749.96", text)
+        self.assertEqual(self.other_periods(text),
+                         "• Price changes from 20/01/2026 (usually when the child turns 3)\n"
+                         "   Monthly estimate: 749.96")
 
     def test_with_three_periods_both_others_are_listed_in_order(self):
         text = self.summary(plan_node(FIRST, SECOND, THIRD), AFTER_SWITCH)
 
-        self.assertIn(
-            "• Other periods: From 2026-01-20 — 749.96; From 2027-08-31 — 650.00", text
-        )
-        self.assertIn("• Monthly estimate: 705.08", text)
+        others = self.other_periods(text)
+        self.assertLess(others.index("from 20/01/2026"), others.index("from 31/08/2027"))
+        self.assertIn("749.96", others)
+        self.assertIn("650.00", others)
+        self.assertIn("• Monthly estimate: 705.08", self.pricing(text))
 
-    def test_session_prices_use_the_current_periods_pricing_group(self):
+    def test_sessions_show_no_prices(self):
         text = self.summary(plan_node(FIRST, SECOND), AFTER_SWITCH)
 
-        self.assertIn(f"— {PRICE[G2]:.2f}", text)
+        self.assertNotIn(f"{PRICE[G2]:.2f}", text)
         self.assertNotIn(f"{PRICE[G1]:.2f}", text)
 
-    def test_today_before_the_switch_shows_the_first_and_its_prices(self):
+    def test_today_before_the_switch_shows_the_first(self):
         text = self.summary(plan_node(FIRST, SECOND), BEFORE_SWITCH)
 
-        self.assertIn("*Current pricing* (From 2026-01-20)", text)
-        self.assertIn("• Monthly estimate: 749.96", text)
-        self.assertIn("• Weekly total: 173.00", text)
-        self.assertIn("• Other periods: From 2026-08-01 — 705.08", text)
-        self.assertIn(f"— {PRICE[G1]:.2f}", text)
-        self.assertNotIn(f"{PRICE[G2]:.2f}", text)
+        self.assertIn("• Monthly estimate: 749.96", self.pricing(text))
+        self.assertIn("• Weekly total: 173.00", self.pricing(text))
+        self.assertIn("from 01/08/2026", self.other_periods(text))
+        self.assertIn("705.08", self.other_periods(text))
 
     def test_a_future_start_plan_uses_the_first_period(self):
         text = self.summary(plan_node(FIRST, SECOND), date(2025, 12, 1))
 
-        self.assertIn("*Current pricing* (From 2026-01-20)", text)
-        self.assertIn("• Monthly estimate: 749.96", text)
-        self.assertIn(f"— {PRICE[G1]:.2f}", text)
+        self.assertIn("• Monthly estimate: 749.96", self.pricing(text))
 
     def test_a_plan_wholly_in_the_past_uses_the_last_period(self):
         text = self.summary(plan_node(FIRST, SECOND), date(2028, 1, 1))
 
-        self.assertIn("*Current pricing* (From 2026-08-01)", text)
-        self.assertIn("• Monthly estimate: 705.08", text)
-        self.assertIn(f"— {PRICE[G2]:.2f}", text)
+        self.assertIn("• Monthly estimate: 705.08", self.pricing(text))
 
-    def test_a_single_period_plan_is_unchanged(self):
+    def test_a_single_period_plan_has_no_other_periods(self):
         node = plan_node(FIRST)
         for today in (BEFORE_SWITCH, AFTER_SWITCH, date(2030, 1, 1)):
             text = self.summary(node, today)
@@ -371,9 +373,6 @@ class SlackSummaryTests(unittest.TestCase):
             self.assertIn("• Weekly total: 173.00", text)
             self.assertIn("• Monthly estimate: 749.96", text)
             self.assertIn("• Public funding: 129.65 (12h)", text)
-            self.assertIn(f"— {PRICE[G1]:.2f}", text)
-            # No second period, so no rate-change note and no other-periods line.
-            self.assertNotIn("rate changes during plan", text)
             self.assertNotIn("Other periods", text)
 
     def test_a_plan_with_no_period_dates_reads_as_it_always_did(self):
@@ -388,10 +387,9 @@ class SlackSummaryTests(unittest.TestCase):
         }
         text = self.summary(node, AFTER_SWITCH)
 
-        self.assertNotIn("Current pricing", text)
         self.assertIn("• Weekly total: 187.50", text)
         self.assertIn("• Monthly estimate: 812.50", text)
-        self.assertIn("rate changes during plan", text)
+        self.assertIn("• Price changes from unknown", text)
 
     def test_the_default_today_is_the_real_today(self):
         today = date.today()
@@ -527,9 +525,9 @@ class StoredBaselineTests(AdjustmentFlowTestCase):
         self.assertIn("• Monthly estimate: 1,791.97", text)
         self.assertNotIn("• Monthly estimate: 1,913.99", text)
         # The stale first period is still visible, but only as an OTHER period.
-        self.assertIn("• Other periods: From", text)
-        self.assertIn("— 1,913.99", text)
-        self.assertIn(f"— {PRICE[G2]:.2f}", text)
+        self.assertIn("*Other periods*\n• Price changes from", text)
+        self.assertIn("   Monthly estimate: 1,913.99", text)
+        self.assertNotIn(f"{PRICE[G2]:.2f}", text)                  # sessions show no prices
 
     def test_a_single_period_plan_is_stored_as_before(self):
         today = date.today()

@@ -16,7 +16,10 @@ MODES (QUEUE_MODE):
     dry_run   (the default) commits NOTHING. Each segment is previewed on its
               own -- a later plan cannot be chained to one that does not exist
               yet -- rounded and clean-checked, and the result goes in a digest.
-    auto      commits clean plans, in order, each verified by read-back.
+    auto      works through the plans in order, each verified by read-back. By
+              default (QUEUE_AUTO_COMMIT off) EVERY plan is posted to Slack and
+              the job waits for Approve (`await_approval`); with
+              QUEUE_AUTO_COMMIT=on a clean plan commits without a person.
 
 A PLAN IS CLEAN only if it validated, raised no warning (the flattener's or
 Famly's; the informational funding-limit note aside), rounding succeeded or was
@@ -26,7 +29,7 @@ and the normal Slack approval message is posted for that plan, with the
 reasons. A human approving it returns the job to the queue (approval.py ->
 jobs.release_after_approval) and the worker carries on.
 
-SAFETY RAILS: QUEUE_ALLOWED_INSTITUTIONS (anything else is held), QUEUE_MAX_
+SAFETY RAILS: QUEUE_AUTO_COMMIT (off by default: every plan waits for Slack Approve), QUEUE_MAX_
 COMMITS_PER_DAY (checked before every commit; the rest waits for the next UTC
 day), a circuit breaker (3 consecutive failed jobs pause the queue), and a
 manual pause, checked before EVERY commit rather than once per job.
@@ -126,14 +129,10 @@ def max_commits_per_day() -> int:
     return _env_number("QUEUE_MAX_COMMITS_PER_DAY", DEFAULT_MAX_COMMITS_PER_DAY, int)
 
 
-def allowed_institutions() -> set[str]:
-    """QUEUE_ALLOWED_INSTITUTIONS, comma separated. Empty means NONE: nothing
-    is committed automatically until institutions are listed."""
-    return {
-        item.strip().upper()
-        for item in os.environ.get("QUEUE_ALLOWED_INSTITUTIONS", "").split(",")
-        if item.strip()
-    }
+def auto_commit() -> bool:
+    """QUEUE_AUTO_COMMIT=on: a clean plan commits without a person. Anything else (and unset, the default):
+    every plan is posted to Slack and waits for Approve. (Replaces QUEUE_ALLOWED_INSTITUTIONS, 2026-11-27.)"""
+    return os.environ.get("QUEUE_AUTO_COMMIT", "").strip().lower() == "on"
 
 
 # --------------------------------------------------------------------------- #
@@ -247,11 +246,31 @@ def finish(job_id: str, detail: str | None = None, *, status: str | None = None)
         jobs.state_set("consecutive_failures", "0")
 
 
+def _post(job: jobs.Job, index: int, prepared, notes=()) -> None:
+    """The plan's approval message: "plan i of n", the advance period, and `notes` under Warnings."""
+    plan_write_web.post_prepared(
+        prepared, position=(index, len(job.segments)),
+        advance=engine.advance_period(job.payload or {}, job.segments[index]), notes=notes,
+        span=(job.segments[index]["from"], job.segments[index]["to"]))
+
+
+AWAITING_APPROVAL = "awaiting approval in Slack"
+
+
+def await_approval(job: jobs.Job, index: int, prepared) -> None:
+    """QUEUE_AUTO_COMMIT off (the default): a clean plan is posted for approval and the job waits, held on this
+    plan. Approve commits it and releases the job (approval.py -> jobs.release_after_approval), exactly as for a
+    held plan; Reject cancels the job. NOT a problem: no hold codes, no needs_attention on the deal, no Slack
+    held line."""
+    _post(job, index, prepared)
+    jobs.set_status(job.job_id, jobs.STATUS_HELD, AWAITING_APPROVAL, preview_id=prepared.preview_id)
+    logger.info("QUEUE JOB AWAITING APPROVAL job_id=%s index=%d", job.job_id, index)
+
+
 def hold(job: jobs.Job, index: int, prepared, reasons: list[str]) -> None:
     """Hold the job on this plan: post the normal approval message, with the why."""
     why = "; ".join(reasons)
-    heading = f"*{_where(job, index)}*\n:pause_button: Held for approval — {why}"
-    plan_write_web.post_prepared(prepared, heading=heading)
+    _post(job, index, prepared, notes=[f"Held for approval: {r}" for r in reasons])
     jobs.set_status(job.job_id, jobs.STATUS_HELD, why, preview_id=prepared.preview_id)
     logger.warning("QUEUE JOB HELD job_id=%s index=%d: %s", job.job_id, index, why)
     _flag_held(job, index, prepared, reasons)
@@ -532,8 +551,6 @@ def _run_dry(job: jobs.Job) -> None:
         reasons = clean_reasons(
             prepared, requested, _allow_zero_estimate(job, index)
         )
-        if job.institution.upper() not in allowed_institutions():
-            reasons.append(f"institution {job.institution or 'unknown'} is not allowed to auto-commit")
         estimates = []
         if prepared.status == 200:
             estimates = [
@@ -578,12 +595,11 @@ def _do_segment(job: jobs.Job) -> bool:
     if prepared.status != 200:
         fail(job.job_id, f"{_where(job, index)} {reasons[0]}")
         return False
-    if job.institution.upper() not in allowed_institutions():
-        reasons.append(
-            f"institution {job.institution or 'unknown'} is not in QUEUE_ALLOWED_INSTITUTIONS"
-        )
     if reasons:
         hold(job, index, prepared, reasons)
+        return False
+    if not auto_commit():
+        await_approval(job, index, prepared)
         return False
 
     # Every check that can stop a commit runs HERE, immediately before it --
@@ -826,7 +842,7 @@ def status() -> dict:
         # always agree on what "today" is.
         "commitsToday": jobs.commits_today(_now()),
         "maxCommitsPerDay": max_commits_per_day(),
-        "allowedInstitutions": sorted(allowed_institutions()),
+        "autoCommit": auto_commit(),
         "maxMonthly": str(max_monthly()),
         "jobs": jobs.counts(),
     }

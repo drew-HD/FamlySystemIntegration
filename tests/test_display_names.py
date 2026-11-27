@@ -494,9 +494,7 @@ class EndToEndSlackTests(LoadTitlesTestCase):
         self.assertIn("• Thursday — Weekend School", text)
         # In no file at all -> the raw UUID.
         self.assertIn("• Friday — s-unknown", text)
-        self.assertIn("• Monday — 1× Meals & Snacks", text)
-        self.assertIn("• Tuesday — 1× Half Day Meals & Snacks", text)
-        self.assertIn("• Tuesday — 1× p-unknown", text)
+        self.assertNotIn("Meals & Snacks", text)          # products are not shown (2026-11-27)
 
     def test_a_manual_override_wins_in_the_summary(self):
         self.write_catalogue(sessions={"s-fnm": "Custom Monday Name"})

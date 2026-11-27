@@ -377,10 +377,10 @@ class ChildLineTests(unittest.TestCase):
         with_name = slack.build_summary(plan, [], child_name=NAME).splitlines()
         without = slack.build_summary(plan, []).splitlines()
 
-        self.assertEqual(with_name[2], f"• Child: {NAME} (`{CHILD}`)")
-        self.assertEqual(without[2], f"• Child: `{CHILD}`")
-        # Only that one line differs.
-        self.assertEqual(with_name[:2] + with_name[3:], without[:2] + without[3:])
+        self.assertTrue(with_name[0].startswith(f"*{NAME} plan 1 of 1 approval*"))
+        self.assertTrue(without[0].startswith(f"*Child `{CHILD}` plan 1 of 1 approval*"))
+        # Only the title differs.
+        self.assertEqual(with_name[1:], without[1:])
 
 
 # --------------------------------------------------------------------------- #
@@ -474,6 +474,11 @@ class MessageFlowTestCase(unittest.TestCase):
         )
 
     def child_line_of(self, text):
+        """The adjusted message's "• Child:" line; for a plan approval message, who its title names
+        ("*<name>" or "*Child `<id>`", the part before " plan i of n approval*")."""
+        first = text.splitlines()[0]
+        if " approval* (from " in first:
+            return first.split(" plan ", 1)[0]
         return next(l for l in text.splitlines() if l.startswith("• Child:"))
 
 
@@ -482,7 +487,7 @@ class PreviewMessageTests(MessageFlowTestCase):
         data, status = self.run_preview()
 
         self.assertEqual(status, 200)
-        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"• Child: {NAME} (`{CHILD}`)")
+        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"*{NAME}")
 
     def test_a_timeout_shows_the_bare_id_and_the_preview_still_succeeds(self):
         self.client.raises = requests.exceptions.ReadTimeout("slow")
@@ -492,7 +497,7 @@ class PreviewMessageTests(MessageFlowTestCase):
         self.assertEqual(status, 200)
         self.assertTrue(data["slack_posted"])
         self.assertTrue(data["preview_id"])
-        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"• Child: `{CHILD}`")
+        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"*Child `{CHILD}`")
 
     def test_an_error_response_shows_the_bare_id_and_the_preview_still_succeeds(self):
         self.client.raises = GraphQLHTTPError("HTTP 500", status_code=500, body="{}")
@@ -501,21 +506,21 @@ class PreviewMessageTests(MessageFlowTestCase):
 
         self.assertEqual(status, 200)
         self.assertTrue(data["slack_posted"])
-        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"• Child: `{CHILD}`")
+        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"*Child `{CHILD}`")
 
     def test_no_match_shows_the_bare_id(self):
         self.client.outcome = response_for()
 
         self.run_preview()
 
-        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"• Child: `{CHILD}`")
+        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"*Child `{CHILD}`")
 
     def test_a_missing_token_shows_the_bare_id(self):
         with mock.patch.object(child_lookup, "_public_client", side_effect=ConfigError("no token")):
             data, status = self.run_preview()
 
         self.assertEqual(status, 200)
-        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"• Child: `{CHILD}`")
+        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"*Child `{CHILD}`")
 
     def test_one_child_is_looked_up_and_only_once(self):
         self.run_preview()
@@ -542,7 +547,7 @@ class AdjustedMessageTests(MessageFlowTestCase):
         text = self.preview_and_adjust()
 
         self.assertEqual(self.child_line_of(text), f"• Child: {NAME} (`{CHILD}`)")
-        self.assertEqual(self.child_line_of(text), self.child_line_of(self.preview_posts[-1]))
+        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"*{NAME}")   # the plan message: name in the title
 
     def test_the_child_line_sits_right_under_the_heading(self):
         text = self.preview_and_adjust()
@@ -905,7 +910,7 @@ class SlowLookupInTheMessagesTests(MessageFlowTestCase):
         self.assertEqual(status, 200)
         self.assertTrue(data["slack_posted"])
         self.assertLess(elapsed, 2.0)
-        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"• Child: `{CHILD}`")
+        self.assertEqual(self.child_line_of(self.preview_posts[-1]), f"*Child `{CHILD}`")
         self.assertNotIn(SECRET_NAME, self.preview_posts[-1])
 
     def test_the_adjusted_message_is_posted_with_the_bare_id(self):
