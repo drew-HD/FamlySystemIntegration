@@ -145,7 +145,7 @@ class EveryCodeHasASentenceTests(unittest.TestCase):
                          "Check the child's start date in Famly.")
         self.assertEqual(messages.lookup("deposit_amount_missing")[1],
                          "No deposit amount is set on the deal.")
-        self.assertEqual(messages.lookup("no_quote")[1], "No quote is attached to the deal.")
+        self.assertEqual(messages.lookup("no_quote")[1], "No quote was attached to the HubSpot deal, so it was not uploaded to Famly.")
         self.assertIn("could not be put in a standard format",
                       messages.lookup("phone_unnormalised")[1])
 
@@ -166,7 +166,7 @@ class StaffMessageTests(Phase2Case):
         self.assertIn("*To check:*", text)
         self.assertIn("• Famly shows a different start date from HubSpot.", text)
         self.assertIn("• No deposit amount is set on the deal.", text)
-        self.assertIn("• No quote is attached to the deal.", text)
+        self.assertIn("• No quote was attached to the HubSpot deal, so it was not uploaded to Famly.", text)
         self.assertNotIn("value_not_offered", text)
         body = text.split("_Codes:")[0]
         for code in ("summary_start_mismatch", "deposit_amount_missing", "phone_unnormalised"):
