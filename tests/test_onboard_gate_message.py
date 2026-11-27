@@ -118,6 +118,14 @@ class QuestionTests(GateCase):
                 self.assertEqual(self.click(action), approval.MSG_HANDLED)     # a second press does nothing
                 self.assertEqual(self.famly.bp_writes, [])                     # the click writes nothing
 
+    def test_a_new_child_on_the_matched_payer_after_the_question_asks_again(self):
+        from actions.onboard_dry_run import runner as dry_runner
+        self.matched()
+        plan = dry_runner.DryRun(self.hub, FamlyReads(self.famly, site_ids=[SITE_ID])).plan_deal(DEAL, {})
+        self.famly.payers[0]["children"]["another-child"] = 1.0
+        later = dry_runner.DryRun(self.hub, FamlyReads(self.famly, site_ids=[SITE_ID])).plan_deal(DEAL, {})
+        self.assertNotEqual(dry_runner.plan_hash(plan), dry_runner.plan_hash(later))   # siblings shown = recorded
+
     def test_the_buttons_are_routed_as_onboarding_actions(self):
         for action in slack.ONBOARD_BP_ACTIONS:
             self.assertIn(action, slack.ONBOARD_ACTIONS)
@@ -186,6 +194,14 @@ class ForceCreateGuardTests(unittest.TestCase):
                 result = self.run_stage([scan])
                 self.assertEqual(self.famly.bp_writes, [])
                 self.assertFalse(result.sent)
+
+    def test_the_child_already_on_the_old_payer_or_elsewhere_is_never_a_success(self):
+        for scan in ([self.p("the-one", {"kid": 1.0})],                                   # present on the old payer
+                     [self.p("the-one"), bp.Payer("other", "z@x.org", {"kid": 1.0})]):  # linked elsewhere
+            with self.subTest(scan=[x.id for x in scan]):
+                result = self.run_stage([scan])
+                self.assertEqual((result.code, result.bill_payer_id), (bp.PLAN_CHANGED, None))
+                self.assertEqual(self.famly.bp_writes, [])
 
     def test_an_unconfirmed_earlier_write_is_never_repeated(self):
         result = self.run_stage([[self.p("the-one")]], unresolved=True)

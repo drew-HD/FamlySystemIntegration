@@ -24,6 +24,8 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 
 - Registry nightly refresh (branch registry-refresh, fakes only): `registry-refresh [--dry-run]`, cron 02:30 London (line in docs/registry_design.md); nightly Slack list of every open issue (child name, deal link, how to fix, new ones marked; closed deals left out), branch registry-refresh-issues.
 
+- Gate A rewrite (branch onboard-gate-message, fakes only): names, emails, real dates, Actions/Summary/Warnings; a bill payer email match asks Same / Siblings (registry `sibling_links`) / Different (a NEW payer with the same email). Different is NOT probed live: Famly may refuse a duplicate email, and later deals with that email will flag bill_payer_ambiguous.
+
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
 - QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_ALLOWED_INSTITUTIONS.

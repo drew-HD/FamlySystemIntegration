@@ -305,6 +305,11 @@ def run_stage(*, public, scan, contacts, approved: dict, site_id: str, child_id:
     decision = scan_mod.decide(contacts, payers, child_id)
     if decision.flag == scan_mod.SCAN_FAILED:
         return StageResult(scan_mod.SCAN_FAILED)
+    if force_create and decision.base() != approved_decision.base():
+        # "Different bill payer" was approved against one exact match. Anything else now (the child already on
+        # the old payer, linked elsewhere, a second match) is NOT a success: nothing is written.
+        logger.warning("onboard: bill payer decision changed since a forced create was approved; nothing written")
+        return StageResult(scan_mod.PLAN_CHANGED)
     linkage_only = (decision.bill_payer_id == approved_decision.bill_payer_id
                     and decision.matches == approved_decision.matches
                     and (decision.status == scan_mod.STATUS_PRESENT

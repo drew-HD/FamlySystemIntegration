@@ -514,8 +514,11 @@ def _bill_payer_choice_notice(job, deps, plan, deal, child: "ChildResult", bill_
         child_name = deal_child_name(deal) or None
         if choice == approval_mod.CHOICE_SIBLINGS and bill_payer.code in (bill_payer_scan.ATTACHED,
                                                                           bill_payer_scan.PRESENT):
+            if not other_ids:
+                logger.info("onboard: siblings job=%s child=%s nothing to record", job.id, child.child_id)
+                return
             code = (deps.registry.record_siblings(child.child_id, other_ids, job.deal_id)
-                    if deps.registry is not None and other_ids else "failed")
+                    if deps.registry is not None else "failed")
             logger.info("onboard: siblings job=%s child=%s others=%s code=%s", job.id, child.child_id,
                         ",".join(other_ids), code)
             deps.notifier.notice(notifier_mod.siblings_text(job.deal_id, child_name, names, code != "failed"))
