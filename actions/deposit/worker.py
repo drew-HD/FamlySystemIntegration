@@ -121,17 +121,21 @@ class Worker:
 
     def first(self, job: store.Job) -> None:
         name_deal = None
+        saved = store.installments(job.id)
+        first = saved[0] if saved else None
+        untouched = first is not None and first.deposit_state == store.D_PENDING and first.invoice_state == store.I_DUE
         if not config.writes_allowed(job.deal_id):
-            if config.mode() == config.MODE_DRY:
+            if config.mode() == config.MODE_DRY and untouched:
                 store.transition(job.id, store.APPROVED, store.DRY_DONE)
                 self.notifier.notice(messages.done_text(self.name(job), job.deal_id,
                                                         "approved in dry run; nothing was written."))
-            else:
+            else:                                       # live but not allow-listed, or something already written
                 self.hold(job, "deal_not_allowed")
             return
-        saved = store.installments(job.id)
-        first = saved[0] if saved else None
-        if first is None or (first.deposit_state == store.D_PENDING and first.invoice_state == store.I_DUE):
+        if first is None:
+            self.hold(job, "plan_changed")
+            return
+        if untouched:
             facts, insts = self._facts_and_plan(job)
             name_deal = facts.deal
             if facts.code:
@@ -140,10 +144,19 @@ class Worker:
             if [i.amount for i in insts] != [i.amount for i in saved]:
                 self.hold(job, "plan_changed")
                 return
+            if (facts.child_id, facts.institution_id, facts.bill_payer_id) != \
+                    (job.child_id, job.institution_id, job.bill_payer_id):
+                self.hold(job, "bill_payer_changed")
+                return
             if facts.deposits:
                 self.hold(job, "deposit_exists")
                 return
-            self._save(job, facts, insts)               # today's dates; nothing written yet
+            # The later installments keep the dates shown in Slack; the second must still be more than 14 days
+            # away, else the approval is out of date (cancel and enqueue again).
+            if len(saved) > 1 and (date.fromisoformat(saved[1].on_date) - self.today).days <= planner.MIN_DAYS_TO_SECOND:
+                self.hold(job, "plan_changed")
+                return
+            store.redate_first(job.id, self.today.isoformat())   # "added on approval": dated today
         job = store.get(job.id)
         first = store.installments(job.id)[0]
         writer = self.writer(job)
@@ -168,7 +181,9 @@ class Worker:
                     and self.today >= date.fromisoformat(inst.invoice_on)
                     and self.now.hour >= config.INVOICE_SEND_HOUR_LONDON):
                 start = reads.child_start(self.rest.get(f"/v2/children/{job.child_id}/summary"))
-                if start is not None and planner.regular_run_covers(on, start):
+                if start is None:
+                    raise writes.Held("start_date_missing")
+                if planner.regular_run_covers(on, start):
                     store.inst_transition(job.id, inst.number, "invoice_state", store.I_DUE, store.I_COVERED)
                     continue
                 self._same_payer(job)

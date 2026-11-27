@@ -69,8 +69,12 @@ class FakeGql:
     def __init__(self, preview_total=None):
         self.calls, self.preview_total = [], preview_total
 
+    persist_raises = False
+
     def execute(self, query_path, variables, operation_name):
         self.calls.append(variables)
+        if variables["mode"] == "Persist" and self.persist_raises:
+            raise TimeoutError("famly did not answer")
         total = self.preview_total
         if total is None:      # the unpaid deposits the fake rest holds are what an invoice would carry
             total = "0"
@@ -244,6 +248,27 @@ class FirstInstallmentTests(Base):
         self.run_at(2026, 11, 7)
         self.assertEqual((self.job().hold_code, len(self.rest.posts)), ("deposit_outcome_unknown", 1))
 
+    def test_a_persist_that_fails_is_never_resent(self):
+        self.to_approved()
+        self.preview_matches("1500.00")
+        self.gql.persist_raises = True
+        self.run_at(2026, 11, 6)
+        self.assertEqual(self.job().hold_code, "invoice_outcome_unknown")
+        self.gql.persist_raises = False
+        store.resume(self.job().id)
+        self.run_at(2026, 11, 7)
+        self.assertEqual((self.job().hold_code, len(self.gql.persists()), len(self.rest.posts)),
+                         ("invoice_outcome_unknown", 1, 1))
+
+    def test_switching_to_dry_after_a_deposit_was_added_holds_not_dry_done(self):
+        self.to_approved()
+        self.preview_matches("999.00")
+        self.run_at(2026, 11, 6)                          # deposit added, invoice held
+        store.resume(self.job().id)
+        with mock.patch.dict(os.environ, {"DEPOSIT_MODE": "dry"}):
+            self.run_at(2026, 11, 7)
+        self.assertEqual((self.job().status, self.job().hold_code), (store.HELD, "deal_not_allowed"))
+
     def test_amounts_changed_after_approval_hold(self):
         self.to_approved()
         self.hub.deals[DEAL] = deal(deposit_amount="1600")
@@ -284,6 +309,27 @@ class ScheduleTests(Base):
         self.run_at(2026, 12, 31)                 # installment 3 added
         self.run_at(2027, 1, 1, hour=9)           # January's regular run covers the child: no invoice
         self.assertEqual((len(self.rest.posts), len(self.gql.persists()), self.job().status), (3, 2, store.DONE))
+
+    def test_a_late_approval_keeps_the_approved_dates_or_holds(self):
+        self.to_approved((2026, 11, 5))           # shown: 5 Nov, 1 Dec, 1 Jan
+        self.preview_matches("750.00")
+        self.run_at(2026, 11, 7)                  # 2 days late: first dated 7 Nov, later dates unchanged
+        self.assertEqual([i.on_date for i in store.installments(self.job().id)],
+                         ["2026-11-07", "2026-12-01", "2027-01-01"])
+        store._reset_for_tests()
+        self.rest = FakeRest(start="2027-01-15")
+        self.to_approved((2026, 11, 5))
+        self.run_at(2026, 11, 20)                 # 1 Dec is now only 11 days away: not what was approved
+        self.assertEqual((self.job().hold_code, self.rest.posts), ("plan_changed", []))
+
+    def test_unreadable_start_on_invoice_day_holds(self):
+        self.to_approved((2026, 11, 5))
+        self.preview_matches("750.00")
+        self.run_at(2026, 11, 5)
+        self.run_at(2026, 11, 30)
+        self.rest.start = ""
+        self.run_at(2026, 12, 1, hour=9)
+        self.assertEqual((self.job().hold_code, len(self.gql.persists())), ("start_date_missing", 1))
 
     def test_bill_payer_change_holds_a_later_installment(self):
         self.to_approved((2026, 11, 5))
@@ -348,6 +394,11 @@ class BackfillTests(Base):
         self.assertEqual([j.deal_id for j in store.jobs()], ["3"])
         self.assertEqual(self.bf(True).get("deposit_exists"), 1)        # a second run never adds again
         self.assertEqual(len(self.rest.posts), 1)
+
+    def test_confirm_writes_only_allow_listed_deals(self):
+        with mock.patch.dict(os.environ, {"DEPOSIT_ALLOWED_DEAL_IDS": "999"}):
+            counts = self.bf(True)
+        self.assertEqual((counts.get("deal_not_allowed"), self.rest.posts), (1, []))
 
     def test_readback_mismatch_stops_the_run(self):
         self.rest.drop_new = True

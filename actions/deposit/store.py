@@ -243,6 +243,14 @@ def save_installments(job_id: str, rows: list[dict]) -> None:
         c.execute("COMMIT")
 
 
+def redate_first(job_id: str, day: str) -> bool:
+    """Installment 1 is dated the day it is added. Only while nothing of it is written."""
+    with _open() as c:
+        cur = c.execute("UPDATE deposit_installments SET on_date=?, invoice_on=? WHERE job_id=? AND number=1 "
+                        "AND deposit_state='pending' AND invoice_state='due'", (day, day, job_id))
+        return cur.rowcount == 1
+
+
 def installments(job_id: str) -> list[Inst]:
     with _open() as c:
         rows = c.execute("SELECT * FROM deposit_installments WHERE job_id=? ORDER BY number", (job_id,)).fetchall()

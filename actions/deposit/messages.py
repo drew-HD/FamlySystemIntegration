@@ -53,7 +53,7 @@ def gate_text(name: str, deal_id: str, preference: str, installments: list, dry:
     for i in installments:
         on = fmt_date(i.on)
         if i.number == 1:
-            lines.append(f"• {money(i.amount)} added on approval, dated {on}, invoiced now")
+            lines.append(f"• {money(i.amount)} added and invoiced on approval")
         else:
             added = fmt_date(i.on - timedelta(days=1))
             invoice = (f"own invoice on {fmt_date(i.invoice_on)}" if i.invoice_on
