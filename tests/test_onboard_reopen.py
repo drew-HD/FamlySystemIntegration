@@ -129,8 +129,10 @@ class WebhookCannotReopen(ReopenCase):
             if "reopen=" in path.read_text(encoding="utf-8"):
                 callers.append(path.as_posix())
         # The ad hoc pipeline has its own reopen (adhoc-enqueue --reopen-done; its store refuses it from the webhook).
+        # The deposit pipeline's is CLI only (deposit-enqueue --reopen-done); its webhook never passes it.
         self.assertEqual(sorted(callers), ["actions/adhoc/cli_enqueue.py", "actions/adhoc/store.py",
-                                           "actions/adhoc/worker.py", "actions/onboard/batch.py",
+                                           "actions/adhoc/worker.py", "actions/deposit/cli.py",
+                                           "actions/onboard/batch.py",
                                            "actions/onboard/cli_enqueue.py", "actions/onboard/store.py"])
 
 

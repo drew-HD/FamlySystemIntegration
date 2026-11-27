@@ -80,6 +80,11 @@ CHILD_NAME_PROPERTIES = tuple(
 DEAL_PROPERTIES = DEAL_PROPERTIES + tuple(
     p for p in CHILD_NAME_PROPERTIES if p not in DEAL_PROPERTIES
 )
+# The deposit pipeline's read (actions/deposit). Names go to Slack only.
+DEPOSIT_DEAL_PROPERTIES = (
+    "dealstage", "pipeline", "famly_childid", "famly_plan_status", "location_of_interest",
+    "deposit_amount", "deposit_preference", "n1st_deposit_installment_50", "n2nd_and_3rd_deposit_installments",
+) + CHILD_NAME_PROPERTIES
 # The child's whole name as HubSpot often holds it (may include a middle name Famly leaves out). Read for the
 # children registry name match only; never printed or logged.
 CHILD_FULL_NAME_PROPERTY = "child_full_name"
@@ -224,6 +229,13 @@ class HubSpotClient:
             f"/crm/v3/objects/deals/{deal_id}",
             {"properties": ",".join(DEAL_PROPERTIES)},
         )
+        return dict(body.get("properties") or {})
+
+    def get_deposit_deal(self, deal_id: str) -> dict:
+        """READ-ONLY: the deal properties the deposit pipeline needs (DEPOSIT_DEAL_PROPERTIES), flat.
+        Child names are for the Slack message only; never print or log them."""
+        body = self._get(f"/crm/v3/objects/deals/{deal_id}",
+                         {"properties": ",".join(DEPOSIT_DEAL_PROPERTIES)})
         return dict(body.get("properties") or {})
 
     def read_plan_uploaded(self, deal_id: str) -> str | None:

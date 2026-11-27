@@ -26,6 +26,8 @@ Add new entries as one or two lines. When this file passes 8 KB, move the oldest
 
 - Gate A rewrite (branch onboard-gate-message, fakes only): names, emails, real dates, Actions/Summary/Warnings; a bill payer email match asks Same / Siblings (registry `sibling_links`) / Different (a NEW payer with the same email). Different is NOT probed live: Famly may refuse a duplicate email, and later deals with that email will flag bill_payer_ambiguous.
 
+- Deposits (`actions/deposit`; probe merged a4ab68d, worker on branch deposit-worker, fakes only): webhook `deposit_enqueue` -> job waits for child, bill payer and plan_created -> Slack Approve -> first deposit + invoice (preview must equal the deposit, then Persist, notify on). 50/25/25: later deposits added the day before their date (1st of month), own invoice on that date from 08:00 London unless the regular run bills the child that month. Cron `deposit-worker` every 10 min. `deposit-backfill` (dry unless --confirm): paid stages get one PAID_EXTERN deposit, Deposit Pending is queued, 50/25/25 listed for a hand check. Probe facts (live 2026-11-27): a POST adds, decimals kept, paid reads back PAYED_EXTERNALLY, unpaid PENDING; preview leaves paid deposits out.
+
 ## .env switches (names only; values live in .env)
 - COMMIT_ENABLED (master switch for Approve commits; dev false) and COMMIT_ALLOWED_CHILD_IDS (allow-list, `*` = all).
 - QUEUE_MODE off | dry_run | auto (unset = dry_run), QUEUE_AUTO_COMMIT on | off (default off: every queued plan waits for Slack Approve; QUEUE_ALLOWED_INSTITUTIONS removed 2026-11-27).

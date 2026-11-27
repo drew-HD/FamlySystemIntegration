@@ -31,6 +31,10 @@ from actions.adhoc_probe import cli as adhoc_probe
 from actions.adhoc_plan import cli as adhoc_dry_run
 from actions.adhoc_probe import cli_write as adhoc_probe_write
 from actions.deposit import cli_probe as deposit_probe
+from actions.deposit.cli import Backfill as deposit_backfill
+from actions.deposit.cli import Enqueue as deposit_enqueue
+from actions.deposit.cli import Status as deposit_status
+from actions.deposit.cli import Worker as deposit_worker
 from actions.onboard_audit import cli as onboard_audit
 from actions.testchild_seed import cli as testchild_seed
 from actions.plan_check import cli as plan_check
@@ -99,6 +103,10 @@ ACTIONS = [
     adhoc_dry_run,
     adhoc_probe_write,
     deposit_probe,
+    deposit_enqueue,
+    deposit_worker,
+    deposit_status,
+    deposit_backfill,
     registry_backfill,
     registry_lookup,
     registry_refresh,

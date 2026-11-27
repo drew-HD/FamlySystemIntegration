@@ -25,6 +25,8 @@ from actions.adhoc import approval as adhoc_approval
 from actions.onboard import approval as onboard_approval
 from actions.onboard import web as onboard_web
 from actions.adhoc import web as adhoc_web
+from actions.deposit import approval as deposit_approval
+from actions.deposit import web as deposit_web
 from actions.plan_write import approval as plan_write_approval
 from integrations import slack as _slack
 from actions.plan_write import web as plan_write_web
@@ -42,6 +44,7 @@ ACTIONS = {
     contact_lookup_web.ACTION_NAME: contact_lookup_web.handle,  # read-only HubSpot id linking
     onboard_web.ACTION_NAME: onboard_web.handle,  # enqueue only: no Famly or HubSpot call
     adhoc_web.ACTION_NAME: adhoc_web.handle,  # enqueue only: no Famly or HubSpot call
+    deposit_web.ACTION_NAME: deposit_web.handle,  # enqueue only: no Famly or HubSpot call
     delete_plans_web.ACTION_NAME: delete_plans_web.handle,  # TEMPORARY, DESTRUCTIVE clean-up utility
 }
 
@@ -71,6 +74,9 @@ def handle_slack_click(
     # Ad hoc pipeline buttons carry an ad hoc job.
     if action_id in _slack.ADHOC_ACTIONS:
         return adhoc_approval.handle_click(action_id, preview_id, user)
+    # Deposit approvals carry a deposit job.
+    if action_id in _slack.DEPOSIT_ACTIONS:
+        return deposit_approval.handle_click(action_id, preview_id, user)
     return SLACK_CLICK_HANDLER(
         action_id, preview_id, user, trigger_id, response_url=response_url
     )
