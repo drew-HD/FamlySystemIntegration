@@ -4,10 +4,8 @@ import argparse
 
 from actions.pull_roster.runner import _public_client
 from core.client import GraphQLClient
-from core.hubspot import HubSpotDealWriter
-
 # The worker and backfill write `famly_deposit_status`, which only the writer class has (it also has every read).
-HubSpotClient = HubSpotDealWriter
+from core.hubspot import HubSpotDealWriter
 from core.rest_client import RestClient
 
 from . import config, store
@@ -28,7 +26,7 @@ class Worker:
         if config.mode() == config.MODE_OFF:
             print("DEPOSIT_MODE is off; nothing done")
             return 0
-        counts = W(HubSpotClient(), RestClient(), GraphQLClient(), _public_client(), SlackNotifier()).run_once()
+        counts = W(HubSpotDealWriter(), RestClient(), GraphQLClient(), _public_client(), SlackNotifier()).run_once()
         print(f"deposit-worker: {counts['jobs']} job(s) looked at; {store.status_counts()}")
         return 0
 
@@ -69,7 +67,7 @@ class Backfill:
 
         from . import backfill
         try:
-            backfill.run(HubSpotClient(), RestClient(), _public_client(), confirm=args.confirm, limit=args.limit,
+            backfill.run(HubSpotDealWriter(), RestClient(), _public_client(), confirm=args.confirm, limit=args.limit,
                          out_path=Path(args.out) if args.out else None)
         except backfill.Stop as exc:
             print(f"STOPPED: {exc}")
